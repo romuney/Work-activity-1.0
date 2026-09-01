@@ -310,19 +310,27 @@ function tipAttr(o) { return ' data-tip="' + esc(tipHtml(o)) + '"'; }
 // aggregate() собирает из него любой срез: все подразделения или одно.
 
 // Недельный снимок: суммируем по месяцам (последняя неделя лежит в одном).
-var WEEK_KEYS = ['cnt_emp', 'low', 'prev_low', 'low_fresh', 'low_long',
-  'high', 'prev_high', 'high_fresh', 'high_long',
+var WEEK_KEYS = ['cnt_emp', 'prev_low', 'low_fresh', 'low_long',
+  'prev_high', 'high_fresh', 'high_long',
   'talk_20_30', 'prev_talk_20_30', 'talk_30_50', 'talk_50_plus'];
 
 // Периодовые признаки: по месяцам НЕ аддитивны (сотрудник попадает в каждый
 // свой месяц), поэтому внутри подразделения берём максимум по месяцам.
-var PERIOD_KEYS = ['leave', 'leave_fresh', 'leave_long',
-  'weekend', 'weekend_fresh', 'weekend_long'];
+var PERIOD_KEYS = ['leave_fresh', 'leave_long', 'weekend_fresh', 'weekend_long'];
 
 // Месячные величины: чистые суммы, складываются в любом разрезе.
 var MONTH_KEYS = ['cnt_month_grey', 'cnt_month_low', 'cnt_month_normal', 'cnt_month_high',
-  'dur_plan_sum', 'dur_plan_cnt', 'dur_wd_sum', 'dur_wd_cnt', 'dur_all_sum', 'dur_all_cnt',
+  'dur_plan_sum', 'dur_plan_cnt', 'dur_all_sum', 'dur_all_cnt',
   'talk_h_sum', 'work_h_sum'];
+
+// Итоги, которые SQL не отдаёт: полосы непересекающиеся и покрывают категорию
+// целиком, поэтому итог = их сумма. Пары «итог: из чего складывается».
+var SUM_KEYS = [
+  ['low', 'low_fresh', 'low_long'],
+  ['high', 'high_fresh', 'high_long'],
+  ['leave', 'leave_fresh', 'leave_long'],
+  ['weekend', 'weekend_fresh', 'weekend_long']
+];
 
 function zeroBag(keys) {
   var o = {}, i;
@@ -365,11 +373,10 @@ function buildModel() {
   return { depts: order, byName: byName, monthOrder: monthOrder, monthMeta: monthSet, cache: {} };
 }
 
-// Средняя рабочая активность, ч/день. Приоритет базы дней тот же, что был
-// в coalesce-цепочке SQL: плановый день → будни без плана → все дни.
+// Средняя рабочая активность, ч/день. База дней: плановые дни, а если их
+// в срезе нет вовсе — все дни. Это остаток прежней coalesce-цепочки из SQL.
 function ratioAct(a) {
   if (a.dur_plan_cnt > 0) return a.dur_plan_sum / a.dur_plan_cnt;
-  if (a.dur_wd_cnt > 0) return a.dur_wd_sum / a.dur_wd_cnt;
   if (a.dur_all_cnt > 0) return a.dur_all_sum / a.dur_all_cnt;
   return null;
 }
@@ -387,6 +394,7 @@ function aggregate(name) {
 
   var list = name === null ? MODEL.depts : (MODEL.byName[name] ? [MODEL.byName[name]] : []);
   var snap = zeroBag(WEEK_KEYS.concat(PERIOD_KEYS));
+  snap.low = 0; snap.high = 0; snap.leave = 0; snap.weekend = 0;
   var acc = {}, total = zeroBag(MONTH_KEYS), i, k, mKey;
 
   for (i = 0; i < MODEL.monthOrder.length; i++) acc[MODEL.monthOrder[i]] = zeroBag(MONTH_KEYS);
@@ -402,6 +410,11 @@ function aggregate(name) {
         total[MONTH_KEYS[k]] += d.months[mKey][MONTH_KEYS[k]];
       }
     }
+  }
+
+  // Итоги категорий: SQL отдаёт только полосы, складываем их здесь.
+  for (i = 0; i < SUM_KEYS.length; i++) {
+    snap[SUM_KEYS[i][0]] = snap[SUM_KEYS[i][1]] + snap[SUM_KEYS[i][2]];
   }
 
   // Дельты недельного снимка — здесь, а не в SQL.
