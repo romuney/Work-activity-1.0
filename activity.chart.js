@@ -18,10 +18,12 @@
 // ЧТО СЧИТАЕТ JS (в SQL этого больше нет):
 //   доли, средние, дельты, итоги, «все подразделения», недельные доли для
 //   спарклайнов, пересчёт всего листа под выбранное подразделение.
-//   SQL отдаёт только аддитивные счётчики и суммы двух гранулярностей:
-//   строки 'month' (как в 1.0) и строки 'week' (состав по cat_week, численность
-//   недели, компоненты средних). Нет строк 'week' — лист работает по месяцам,
-//   переключатель «Месяцы / Недели» и спарклайны не показываются.
+//   SQL отдаёт только аддитивные счётчики и суммы. Скрипт принимает две выдачи:
+//   activity_detail.sql — подневную (строка = подразделение × день; месяц
+//   и неделю считает JS и сам группирует дни, см. dailyToPeriods в БЛОКЕ 3) —
+//   и activity.sql — уже сгруппированную (строки 'month' и 'week'). Без
+//   недельных данных лист работает по месяцам, переключатель «Месяцы / Недели»
+//   и спарклайны не показываются.
 //
 // ИНТЕРАКТИВ:
 //   клик по строке таблицы  → фильтрует KPI-полосу и оба графика;
@@ -42,7 +44,8 @@ var CFG = {
     dept: 'lvl_down_nm',
     month: 'date_structure',
     kind: 'row_kind',         // 'month' | 'week'; колонки нет — все строки месячные (выдача 1.0)
-    flag: 'flag_last_week'    // в строках 'week': 1 — последняя закрытая неделя
+    flag: 'flag_last_week',   // 1 — последняя закрытая неделя, 2 — предыдущая
+    dailyMark: 'cnt_week_low' // есть такая колонка — выдача подневная (activity_detail.sql)
   },
 
   sparkWeeks: 12,             // сколько закрытых недель показывает спарклайн в таблице
@@ -395,6 +398,110 @@ function zeroBag(keys) {
   return o;
 }
 
+// --- Подневная выдача (activity_detail.sql) → строки 'month' и 'week' ---------
+// Строка = подразделение × день, набор колонок как в 1.0 плюс cnt_week_*,
+// cnt_day и flag_last_week. Месяц и неделя (понедельник дня) считаются здесь,
+// дни группируются в периоды и отдаются дальше в том же виде, что строки
+// activity.sql, — остальной конвейер этого не замечает.
+//   суммы (часы, дни)        → складываются по дням периода;
+//   численности (cnt_*,      → максимум по дням: категория у сотрудника внутри
+//   полосы, prev_*, прогулы)   периода постоянна, дневной счётчик — численность
+//                              категории в этот день, максимум — численность
+//                              в пиковый день (см. шапку SQL).
+// Снимок недели (cnt_emp, полосы, prev_*, Talk) в выдаче уже ограничен
+// flag_last_week внутри FILTER — вне своих недель он нулевой, поэтому его
+// максимум берётся по всем дням подразделения, как и периодовые признаки.
+var DAY_CATS = ['grey', 'low', 'normal', 'high'];
+var DAY_SUM_KEYS = ['dur_plan_sum', 'dur_plan_cnt', 'dur_all_sum', 'dur_all_cnt',
+  'talk_h_sum', 'work_h_sum'];
+
+function isDaily(rows) {
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i]) return rows[i][CFG.fields.dailyMark] !== undefined;
+  }
+  return false;
+}
+
+// Понедельник недели дня как ключ 'YYYY-MM-DD' (неделя понедельник–воскресенье).
+function mondayKey(dk) {
+  var d = new Date(Date.UTC(dk.y, dk.m, dk.d));
+  d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7);
+  return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+}
+
+function maxInto(bag, keys, row, prefix) {
+  for (var k = 0; k < keys.length; k++) {
+    var v = num(row[prefix ? prefix + keys[k] : keys[k]]);
+    if (v > bag[keys[k]]) bag[keys[k]] = v;
+  }
+}
+function sumInto(bag, keys, row) {
+  for (var k = 0; k < keys.length; k++) bag[keys[k]] += num(row[keys[k]]);
+}
+
+function dailyToPeriods(rows) {
+  var byName = {}, order = [], SNAP_KEYS = WEEK_KEYS.concat(PERIOD_KEYS), i, k, name;
+
+  for (i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row) continue;
+    name = row[CFG.fields.dept];
+    name = (name === null || name === undefined || name === '') ? DASH : String(name);
+    var dk = toDayKey(row[CFG.fields.month]);
+    if (!dk) continue;
+    var mKey = dk.y + '-' + pad2(dk.m + 1), wKey = mondayKey(dk);
+
+    var dept = byName[name];
+    if (!dept) {
+      dept = { name: name, months: {}, weeks: {}, snap: zeroBag(SNAP_KEYS) };
+      byName[name] = dept;
+      order.push(dept);
+    }
+    var m = dept.months[mKey];
+    if (!m) { m = { cat: zeroBag(DAY_CATS), sum: zeroBag(DAY_SUM_KEYS) }; dept.months[mKey] = m; }
+    maxInto(m.cat, DAY_CATS, row, 'cnt_month_');
+    sumInto(m.sum, DAY_SUM_KEYS, row);
+
+    var w = dept.weeks[wKey];
+    if (!w) { w = { cat: zeroBag(DAY_CATS), sum: zeroBag(DAY_SUM_KEYS), cnt: 0, flag: 0 }; dept.weeks[wKey] = w; }
+    maxInto(w.cat, DAY_CATS, row, 'cnt_week_');
+    sumInto(w.sum, DAY_SUM_KEYS, row);
+    w.cnt = Math.max(w.cnt, num(row.cnt_day));
+    // Флага в выдаче нет — последняя закрытая неделя та, где есть снимок (cnt_emp > 0).
+    w.flag = Math.max(w.flag, num(row[CFG.fields.flag]), num(row.cnt_emp) > 0 ? 1 : 0);
+
+    maxInto(dept.snap, SNAP_KEYS, row, '');
+  }
+
+  var out = [], F = CFG.fields;
+  for (i = 0; i < order.length; i++) {
+    var d = order[i], mKeys = [], wKeys = [], key, j;
+    for (key in d.months) if (d.months.hasOwnProperty(key)) mKeys.push(key);
+    for (key in d.weeks) if (d.weeks.hasOwnProperty(key)) wKeys.push(key);
+    mKeys.sort(); wKeys.sort();
+
+    for (j = 0; j < mKeys.length; j++) {
+      var mo = d.months[mKeys[j]], r = {};
+      r[F.kind] = 'month'; r[F.dept] = d.name; r[F.month] = mKeys[j] + '-01'; r[F.flag] = 0;
+      for (k = 0; k < DAY_CATS.length; k++) r['cnt_cat_' + DAY_CATS[k]] = mo.cat[DAY_CATS[k]];
+      for (k = 0; k < DAY_SUM_KEYS.length; k++) r[DAY_SUM_KEYS[k]] = mo.sum[DAY_SUM_KEYS[k]];
+      // Снимок недели и периодовые признаки — один раз на подразделение,
+      // в первой строке месяца: buildModel складывает их по месяцам.
+      for (k = 0; k < SNAP_KEYS.length; k++) r[SNAP_KEYS[k]] = j === 0 ? d.snap[SNAP_KEYS[k]] : 0;
+      out.push(r);
+    }
+    for (j = 0; j < wKeys.length; j++) {
+      var we = d.weeks[wKeys[j]], rw = {};
+      rw[F.kind] = 'week'; rw[F.dept] = d.name; rw[F.month] = wKeys[j]; rw[F.flag] = we.flag;
+      for (k = 0; k < DAY_CATS.length; k++) rw['cnt_cat_' + DAY_CATS[k]] = we.cat[DAY_CATS[k]];
+      for (k = 0; k < DAY_SUM_KEYS.length; k++) rw[DAY_SUM_KEYS[k]] = we.sum[DAY_SUM_KEYS[k]];
+      rw.cnt_emp = we.cnt;
+      out.push(rw);
+    }
+  }
+  return out;
+}
+
 function buildModel() {
   var byName = {}, order = [], monthSet = {}, weekSet = {}, hasWeeks = false, i, k;
 
@@ -617,6 +724,9 @@ function buildTableRows() {
   }
   return out;
 }
+
+// Подневная выдача сначала сводится к строкам 'month' и 'week'.
+if (isDaily(rawData)) rawData = dailyToPeriods(rawData);
 
 var MODEL = buildModel();
 var TOTAL = MODEL.depts.length ? aggregate(null) : null;

@@ -1,3 +1,35 @@
+-- ============================================================================
+-- activity_detail.sql — запрос листа «Мониторинг рабочей активности», подневный
+-- ============================================================================
+-- Строка выдачи = подразделение (lvl_down_nm) × календарный день (calendar_dt).
+-- Месяцев и недель в SQL нет: месяц и неделю (понедельник дня) считает JS и сам
+-- группирует дни в периоды — activity.chart.js, БЛОК 3, dailyToPeriods().
+-- Один плоский GROUP BY без оконных функций и делений.
+--
+-- Набор колонок — как в 1.0 (activity.sql до недельной ветки), на день:
+--   * cnt_month_* — состав по категории месяца; cnt_emp, полосы, prev_*, Talk —
+--     снимок последней закрытой недели (внутри FILTER по flag_last_week, как
+--     и раньше: вне этих недель нули); прогулы, выходные, компоненты средних.
+-- Добавлено ради недельного режима и спарклайнов:
+--   * cnt_week_* — состав по категории недели (cat_week);
+--   * cnt_day — численность дня без фильтра (знаменатель недельных долей);
+--   * flag_last_week — 1 у дней последней закрытой недели, 2 у предыдущей.
+--
+-- Как JS сводит дни в период:
+--   * суммы (dur_*, talk_h_sum, work_h_sum) складываются — средние точные;
+--   * численности (cnt_*, полосы, prev_*, прогулы, выходные) берутся максимумом
+--     по дням периода: категория у сотрудника внутри периода постоянна, дневной
+--     счётчик — численность категории в этот день, максимум — численность
+--     в пиковый день. Он меньше count(DISTINCT) за период на тех, кто пришёл
+--     или ушёл внутри периода и ни одного дня не пересёкся с остальными
+--     (для недели ноль или единица, для месяца — единицы человек). Нужен точный
+--     count(DISTINCT) — запасной activity.sql, скрипт принимает обе выдачи.
+--
+-- Предпосылки: сотрудник относится ровно к одному lvl_down_nm; витрина
+-- календарная (у сотрудника есть строка на каждый день периода); неделя
+-- витрины — понедельник–воскресенье, как и неделя, которую считает JS.
+-- ============================================================================
+
 SELECT
   `lvl_down_nm` AS `lvl_down_nm`,
   `calendar_dt` AS `date_structure`,
@@ -13,6 +45,23 @@ SELECT
   count(DISTINCT mdm_employee_rk) FILTER (
     WHERE cat_month = 'grey'
   ) AS `cnt_month_grey`,
+  -- состав по категории недели: режим «Недели» и спарклайны
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('low', 'super_low')
+  ) AS `cnt_week_low`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week = 'normal'
+  ) AS `cnt_week_normal`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('high', 'super_high')
+  ) AS `cnt_week_high`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week = 'grey'
+  ) AS `cnt_week_grey`,
+  -- численность дня без фильтра: знаменатель недельных долей
+  count(DISTINCT mdm_employee_rk) AS `cnt_day`,
+  -- 1 — день последней закрытой недели, 2 — предыдущей, иначе 0
+  max(flag_last_week) AS `flag_last_week`,
   count(DISTINCT mdm_employee_rk) FILTER (
     WHERE flag_last_week = 1
   ) AS `cnt_emp`,
@@ -86,7 +135,7 @@ FROM
   prod_proteus.monitoring_work_activity_kavtorin
 GROUP BY
   `lvl_down_nm`,
-  dateTrunc('month', calendar_dt)
+  `calendar_dt`
 ORDER BY
   `lvl_down_nm`,
-  dateTrunc('month', calendar_dt)
+  `calendar_dt`
