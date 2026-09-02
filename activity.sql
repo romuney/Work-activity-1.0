@@ -2,10 +2,23 @@
 -- activity.sql — единственный запрос листа «Мониторинг рабочей активности»
 -- ============================================================================
 -- Один запрос на весь лист: KPI-полоса, состав по категориям, динамика
--- активности и звонков, таблица по подразделениям.
+-- активности и звонков, таблица по подразделениям со спарклайнами.
 --
--- ГРАНУЛЯРНОСТЬ:  1 строка = подразделение (lvl_down_nm) × месяц.
---                 Объём = <подразделений> × <месяцев>, то есть десятки строк.
+-- ГРАНУЛЯРНОСТЬ:  два вида строк в одной выдаче (UNION ALL), колонки общие:
+--   row_kind = 'month' → 1 строка = подразделение × месяц. Состав по cat_month,
+--                        компоненты средних, недельный снимок и периодовые
+--                        признаки — ровно как в 1.0, JS читает их по-старому.
+--   row_kind = 'week'  → 1 строка = подразделение × неделя. Состав по cat_week,
+--                        численность недели и компоненты средних — для режима
+--                        «Недели» в стеке и линиях и для спарклайнов в таблице.
+--                        Снимок и периодовые признаки здесь не нужны — нули.
+--   Объём = <подразделений> × (<месяцев> + <недель>), то есть сотни строк.
+--   Витрина подневная за ~4 месяца, поэтому недель ~18.
+--
+-- СОВМЕСТИМОСТЬ: без ветки 'week' (выдача 1.0) скрипт работает по месяцам,
+--   переключатель гранулярности и спарклайны не показываются. Колонки состава
+--   переименованы cnt_month_* → cnt_cat_* (в неделях они по cat_week, «month»
+--   в имени врал бы); JS читает оба имени.
 --
 -- ПРАВИЛО ОТБОРА КОЛОНОК: в выдаче остаётся поле, которое НЕЛЬЗЯ получить
 --   из соседних. Всё остальное — доли, средние, дельты, суммы категорий,
@@ -13,7 +26,8 @@
 --   Поэтому здесь нет ни одной оконной функции и ни одного деления:
 --   клик по строке таблицы пересчитывает лист на клиенте, без похода в БД.
 --
--- 25 показателей, все аддитивные. Что убрано и почему:
+-- 25 показателей + row_kind + flag_last_week, все показатели аддитивные.
+-- Что убрано против прежних трёх запросов и почему:
 --   * category_little_group строкой + color_col  → пивот в 4 колонки, палитра в CFG
 --   * duration_active / avg_duration_active /
 --     calls / avg_calls (≈120 строк оконных)     → числитель и знаменатель врозь
@@ -33,7 +47,7 @@
 --
 -- ГРАНУЛЯРНОСТЬ ПРИЗНАКОВ: cat_week / weeks_in_current_category / share_talk —
 --   недельные, cat_month — месячный, flg_absent_total / flg_work_in_rest_total —
---   за весь период. В одной плоской выдаче общий ключ только один — месяц:
+--   за весь период. В строках 'month' общий ключ только один — месяц:
 --     • недельные (flag_last_week = 1|2) JS суммирует по месяцам: последняя
 --       закрытая неделя обычно целиком лежит в одном. Если она попадает на стык,
 --       её строки лягут в два месяца и сотрудник посчитается дважды. Точное
@@ -42,9 +56,16 @@
 --     • периодовые (прогулы, работа в выходные) по месяцам НЕ аддитивны —
 --       сотрудник попадает в каждый свой месяц. JS берёт максимум по месяцам
 --       внутри подразделения (см. PERIOD_KEYS в БЛОКЕ 3).
+--
+-- НЕДЕЛЯ: dateTrunc('week', calendar_dt) — понедельник. Если в витрине есть
+--   своя колонка недели с той же разметкой, что у cat_week, — подставьте её.
+--   flag_last_week в строках 'week' говорит JS, какая неделя последняя закрытая:
+--   всё, что позже, в спарклайны и в режим «Недели» не попадает.
 -- ============================================================================
 
+-- ---------------------------------------------------------------- месяц ----
 SELECT
+  'month' AS `row_kind`,
   `lvl_down_nm` AS `lvl_down_nm`,
   dateTrunc('month', calendar_dt) AS `date_structure`,
 
@@ -54,16 +75,16 @@ SELECT
   -- ------------------------------------------------------------------------
   count(DISTINCT mdm_employee_rk) FILTER (
     WHERE cat_month IN ('low', 'super_low')
-  ) AS `cnt_month_low`,
+  ) AS `cnt_cat_low`,
   count(DISTINCT mdm_employee_rk) FILTER (
     WHERE cat_month = 'normal'
-  ) AS `cnt_month_normal`,
+  ) AS `cnt_cat_normal`,
   count(DISTINCT mdm_employee_rk) FILTER (
     WHERE cat_month IN ('high', 'super_high')
-  ) AS `cnt_month_high`,
+  ) AS `cnt_cat_high`,
   count(DISTINCT mdm_employee_rk) FILTER (
     WHERE cat_month = 'grey'
-  ) AS `cnt_month_grey`,
+  ) AS `cnt_cat_grey`,
 
   -- Активная численность последней закрытой недели: знаменатель всех долей.
   count(DISTINCT mdm_employee_rk) FILTER (
@@ -139,6 +160,9 @@ SELECT
     WHERE flg_work_in_rest_total > 5
   ) AS `weekend_long`,
 
+  -- В строках месяца флаг не нужен: снимок ограничен flag_last_week внутри FILTER.
+  0 AS `flag_last_week`,
+
   -- ------------------------------------------------------------------------
   -- Средняя рабочая активность, ч/день. Готовое среднее не отдаём: две пары
   -- «сумма/количество» вместо трёх вложенных оконных функций. Делит JS, он же
@@ -172,6 +196,77 @@ FROM
 GROUP BY
   `lvl_down_nm`,
   dateTrunc('month', calendar_dt)
-ORDER BY
+
+UNION ALL
+
+-- --------------------------------------------------------------- неделя ----
+-- Те же меры, что в месяце, но на неделю и по cat_week: состав, численность
+-- недели и компоненты средних. Полосы «сколько недель в категории», Talk-полосы,
+-- периодовые признаки и прошлая неделя здесь не нужны — нули: их JS берёт
+-- из строк месяца, как в 1.0.
+SELECT
+  'week' AS `row_kind`,
+  `lvl_down_nm` AS `lvl_down_nm`,
+  dateTrunc('week', calendar_dt) AS `date_structure`,
+
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('low', 'super_low')
+  ) AS `cnt_cat_low`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week = 'normal'
+  ) AS `cnt_cat_normal`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('high', 'super_high')
+  ) AS `cnt_cat_high`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week = 'grey'
+  ) AS `cnt_cat_grey`,
+
+  -- Численность недели: знаменатель недельных долей в спарклайнах.
+  -- В последней закрытой неделе совпадает с cnt_emp строк месяца.
+  count(DISTINCT mdm_employee_rk) AS `cnt_emp`,
+
+  0 AS `low_fresh`,
+  0 AS `low_long`,
+  0 AS `prev_low`,
+  0 AS `high_fresh`,
+  0 AS `high_long`,
+  0 AS `prev_high`,
+  0 AS `talk_20_30`,
+  0 AS `talk_30_50`,
+  0 AS `talk_50_plus`,
+  0 AS `prev_talk_20_30`,
+  0 AS `leave_fresh`,
+  0 AS `leave_long`,
+  0 AS `weekend_fresh`,
+  0 AS `weekend_long`,
+
+  -- 1 — последняя закрытая неделя, 2 — предыдущая, иначе 0. Недели после
+  -- последней закрытой (незакрытая текущая) JS в ряд не берёт.
+  max(flag_last_week) AS `flag_last_week`,
+
+  sumIf(duration_hour_correct, plan_working_day_flg = 1) AS `dur_plan_sum`,
+  countIf(plan_working_day_flg = 1) AS `dur_plan_cnt`,
+  sum(duration_hour_correct) AS `dur_all_sum`,
+  count(duration_hour_correct) AS `dur_all_cnt`,
+  sumIf(
+    talk_call_duration_h,
+    (weekday IN (1, 2, 3, 4, 5) AND plan_working_day_flg IS NULL AND duration_hour > 0)
+    OR plan_working_day_flg = 1
+  ) AS `talk_h_sum`,
+  sumIf(
+    CASE WHEN reduced_duration_hour > 7 THEN reduced_duration_hour ELSE duration_hour END,
+    (weekday IN (1, 2, 3, 4, 5) AND plan_working_day_flg IS NULL AND duration_hour > 0)
+    OR plan_working_day_flg = 1
+  ) AS `work_h_sum`
+
+FROM
+  prod_proteus.monitoring_work_activity_kavtorin
+GROUP BY
   `lvl_down_nm`,
-  dateTrunc('month', calendar_dt)
+  dateTrunc('week', calendar_dt)
+
+ORDER BY
+  `row_kind`,
+  `lvl_down_nm`,
+  `date_structure`
