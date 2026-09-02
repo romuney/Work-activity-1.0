@@ -10,9 +10,10 @@
 //     отдельными строками row_kind = 'snapshot' — без двойного счёта на стыке
 //     месяцев и без максимума по месяцам. С выдачей 1.0 файл тоже работает:
 //     если строк snapshot нет, недельные поля берутся по-старому;
-//   * таблица: в блоках «Недоработка» и «Переработка» вместо недельной доли —
-//     спарклайн доли по месяцам (недельная доля осталась в подсказке строки);
-//     поиск по названию, когда команд много;
+//   * таблица: рядом с недельной долей в блоках «Недоработка» и «Переработка»
+//     стоит спарклайн тех же долей за последние закрытые недели (строки
+//     row_kind = 'week'); нет строк недель — остаётся число, как в 1.0.
+//     Поиск по названию, когда команд много;
 //   * KPI-карточки и правые панели при выбранном подразделении показывают
 //     базу «по всем» — видно, лучше команда или хуже остальных;
 //   * стек состава переключается между людьми и долями (100%).
@@ -46,8 +47,10 @@ var CFG = {
   fields: {
     dept: 'lvl_down_nm',
     month: 'date_structure',
-    kind: 'row_kind'          // 'month' | 'snapshot'; если нет — по date_structure
+    kind: 'row_kind',         // 'month' | 'week' | 'snapshot'; если нет — по date_structure
+    flag: 'flag_last_week'    // в строках 'week': 1 — последняя закрытая неделя
   },
+  sparkWeeks: 12,             // сколько закрытых недель показывает спарклайн
 
   text: {
     title: 'Мониторинг рабочей активности',
@@ -62,9 +65,9 @@ var CFG = {
     modeAbs: 'Люди',
     modePct: 'Доли',
     baseAll: 'по всем',
-    trendCol: 'По месяцам',
-    trendLowTip: 'Доля в недоработке от состава каждого месяца, число — последний месяц. Недельная доля — в подсказке строки.',
-    trendHighTip: 'Доля в переработке от состава каждого месяца, число — последний месяц. Недельная доля — в подсказке строки.',
+    shareCol: 'Доля',
+    shareTip: 'Доля от активной численности подразделения на последней закрытой неделе. Линия рядом — та же доля за последние недели.',
+    sparkNote: 'Доля от активной численности недели, последняя точка — та же, что число рядом',
     searchPh: 'Найти команду',
     searchClear: 'Очистить поиск',
     stackNote: 'Клик по столбцу отмечает месяц на графиках справа, клик по легенде убирает категорию',
@@ -256,6 +259,20 @@ function toMonthKey(raw) {
   return { y: d.getUTCFullYear(), m: d.getUTCMonth() };
 }
 
+// '2026-06-01' | timestamp | Date-строка -> {y, m, d}
+function toDayKey(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  var s = String(raw).trim(), d = null;
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return { y: +m[1], m: +m[2] - 1, d: +m[3] };
+  if (/^\d{11,}$/.test(s)) { var ms = Number(s); d = new Date(ms > 1e12 ? ms : ms * 1000); }
+  else if (/^\d{10}$/.test(s)) d = new Date(Number(s) * 1000);
+  else d = new Date(s);
+  if (!d || isNaN(d.getTime())) return null;
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth(), d: d.getUTCDate() };
+}
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
 var MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 var MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль',
   'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
@@ -327,8 +344,10 @@ function tipHtml(o) {
 function tipAttr(o) { return ' data-tip="' + esc(tipHtml(o)) + '"'; }
 
 // ---------- БЛОК 3: ТРАНСФОРМАЦИЯ ДАННЫХ ----------
-// Витрина отдаёт два вида строк (activity.v2.sql):
+// Витрина отдаёт три вида строк (activity.v2.sql):
 //   'month'    — подразделение × месяц: состав и компоненты средних;
+//   'week'     — подразделение × неделя: численность и категории недели
+//                (только для спарклайнов, снимок из них не собирается);
 //   'snapshot' — подразделение: снимок недели и периодовые признаки.
 // Если строк 'snapshot' нет вовсе (выдача 1.0), недельные поля собираются
 // по-старому: сумма по месяцам, периодовые — максимум по месяцам.
@@ -341,6 +360,9 @@ var WEEK_KEYS = ['cnt_emp', 'prev_low', 'low_fresh', 'low_long',
 
 // Периодовые признаки (за весь период).
 var PERIOD_KEYS = ['leave_fresh', 'leave_long', 'weekend_fresh', 'weekend_long'];
+
+// Недельный ряд для спарклайнов: численность и две полосы каждой категории.
+var WEEKROW_KEYS = ['cnt_emp', 'low_fresh', 'low_long', 'high_fresh', 'high_long'];
 
 // Месячные величины: чистые суммы, складываются в любом разрезе.
 var MONTH_KEYS = ['cnt_month_grey', 'cnt_month_low', 'cnt_month_normal', 'cnt_month_high',
@@ -369,7 +391,7 @@ function rowKind(row, mk) {
 }
 
 function buildModel() {
-  var byName = {}, order = [], monthSet = {}, exact = false, i, k;
+  var byName = {}, order = [], monthSet = {}, weekSet = {}, exact = false, i, k;
   var SNAP_KEYS = WEEK_KEYS.concat(PERIOD_KEYS);
 
   for (i = 0; i < rawData.length; i++) {
@@ -387,7 +409,8 @@ function buildModel() {
         snap: zeroBag(SNAP_KEYS),        // точный снимок из строк 'snapshot'
         fbWeek: zeroBag(WEEK_KEYS),      // запасной путь для выдачи 1.0
         fbPeriod: zeroBag(PERIOD_KEYS),
-        months: {}
+        months: {},
+        weeks: {}
       };
       byName[name] = dept;
       order.push(dept);
@@ -396,6 +419,17 @@ function buildModel() {
     if (kind === 'snapshot') {
       exact = true;
       for (k = 0; k < SNAP_KEYS.length; k++) dept.snap[SNAP_KEYS[k]] += num(row[SNAP_KEYS[k]]);
+      continue;
+    }
+    if (kind === 'week') {
+      var dk = toDayKey(row[CFG.fields.month]);
+      if (!dk) continue;
+      var wKey = dk.y + '-' + pad2(dk.m + 1) + '-' + pad2(dk.d);
+      if (!weekSet[wKey]) weekSet[wKey] = { date: dk, flag: 0 };
+      weekSet[wKey].flag = Math.max(weekSet[wKey].flag, num(row[CFG.fields.flag]));
+      var wrec = dept.weeks[wKey];
+      if (!wrec) { wrec = zeroBag(WEEKROW_KEYS); dept.weeks[wKey] = wrec; }
+      for (k = 0; k < WEEKROW_KEYS.length; k++) wrec[WEEKROW_KEYS[k]] += num(row[WEEKROW_KEYS[k]]);
       continue;
     }
     if (!mk) continue;
@@ -423,7 +457,23 @@ function buildModel() {
   for (var mk2 in monthSet) if (monthSet.hasOwnProperty(mk2)) monthOrder.push(mk2);
   monthOrder.sort();
 
-  return { depts: order, byName: byName, monthOrder: monthOrder, monthMeta: monthSet, cache: {}, exact: exact };
+  // Недели: только закрытые (до недели с flag_last_week = 1 включительно),
+  // последние CFG.sparkWeeks штук. Флага нет ни у одной — берём все.
+  var weekOrder = [], lastClosed = null;
+  for (var wk in weekSet) if (weekSet.hasOwnProperty(wk)) weekOrder.push(wk);
+  weekOrder.sort();
+  for (i = 0; i < weekOrder.length; i++) if (weekSet[weekOrder[i]].flag === 1) lastClosed = weekOrder[i];
+  if (lastClosed !== null) {
+    var cut = [];
+    for (i = 0; i < weekOrder.length; i++) if (weekOrder[i] <= lastClosed) cut.push(weekOrder[i]);
+    weekOrder = cut;
+  }
+  if (weekOrder.length > CFG.sparkWeeks) weekOrder = weekOrder.slice(weekOrder.length - CFG.sparkWeeks);
+
+  return {
+    depts: order, byName: byName, monthOrder: monthOrder, monthMeta: monthSet,
+    weekOrder: weekOrder, weekMeta: weekSet, cache: {}, exact: exact
+  };
 }
 
 // Средняя рабочая активность, ч/день. База дней: плановые дни, а если их
@@ -497,10 +547,29 @@ function aggregate(name) {
     });
   }
 
+  // Недельный ряд: доли от активной численности каждой недели.
+  var weeks = [];
+  for (i = 0; i < MODEL.weekOrder.length; i++) {
+    var wKey = MODEL.weekOrder[i], wa = zeroBag(WEEKROW_KEYS), dk = MODEL.weekMeta[wKey].date;
+    for (k = 0; k < list.length; k++) {
+      var wr = list[k].weeks[wKey];
+      if (!wr) continue;
+      for (var q = 0; q < WEEKROW_KEYS.length; q++) wa[WEEKROW_KEYS[q]] += wr[WEEKROW_KEYS[q]];
+    }
+    weeks.push({
+      key: wKey,
+      label: pad2(dk.d) + '.' + pad2(dk.m + 1),
+      cnt: wa.cnt_emp,
+      lowShare: wa.cnt_emp > 0 ? (wa.low_fresh + wa.low_long) / wa.cnt_emp * 100 : null,
+      highShare: wa.cnt_emp > 0 ? (wa.high_fresh + wa.high_long) / wa.cnt_emp * 100 : null
+    });
+  }
+
   var out = {
     name: name,
     snap: snap,
     series: series,
+    weeks: weeks,
     avgAct: ratioAct(total),
     avgTalk: ratioTalk(total)
   };
@@ -508,29 +577,16 @@ function aggregate(name) {
   return out;
 }
 
-// Доля категории от состава месяца, %. Недоработку и переработку не
-// складываем: это разные сигналы с разной логикой реагирования.
-function catShare(point, catKey) {
-  if (!(point.total > 0)) return null;
-  return point.cats[catKey] / point.total * 100;
-}
-
-function sparkSeries(series, catKey) {
-  var values = [], last = null, i;
-  for (i = 0; i < series.length; i++) values.push(catShare(series[i], catKey));
-  for (i = values.length - 1; i >= 0; i--) if (values[i] !== null) { last = values[i]; break; }
-  return { values: values, last: last };
-}
-
-// Строка таблицы: доли, дельты и спарклайны считаются здесь, SQL их не отдаёт.
-function tableRow(name, snap, series) {
+// Строка таблицы: доли и дельты считаются здесь, SQL их не отдаёт.
+// Спарклайн — недельные доли той же категории (строки 'week'); недоработку
+// и переработку не складываем: это разные сигналы с разной логикой реагирования.
+function tableRow(name, snap, weeks) {
   var size = snap.cnt_emp;
-  var spLow = sparkSeries(series, 'under'), spHigh = sparkSeries(series, 'over');
+  var spLow = [], spHigh = [], i;
+  for (i = 0; i < weeks.length; i++) { spLow.push(weeks[i].lowShare); spHigh.push(weeks[i].highShare); }
   return {
-    spark_low: spLow.values,
-    trend_low: spLow.last,
-    spark_high: spHigh.values,
-    trend_high: spHigh.last,
+    spark_low: spLow,
+    spark_high: spHigh,
     name: name,
     isTotal: name === null,
     cnt_emp: size,
@@ -550,7 +606,7 @@ function buildTableRows() {
   var out = [], i;
   for (i = 0; i < MODEL.depts.length; i++) {
     var agg = aggregate(MODEL.depts[i].name);
-    out.push(tableRow(MODEL.depts[i].name, agg.snap, agg.series));
+    out.push(tableRow(MODEL.depts[i].name, agg.snap, agg.weeks));
   }
   return out;
 }
@@ -614,9 +670,9 @@ var SORT_COLS = {
   high_delta: function(r) { return r.high_delta; },
   talk_20_30: function(r) { return r.talk_20_30; },
   talk_30_50: function(r) { return r.talk_30_50; },
-  talk_50_plus: function(r) { return r.talk_50_plus; },
-  trend_low: function(r) { return r.trend_low === null ? -1 : r.trend_low; },
-  trend_high: function(r) { return r.trend_high === null ? -1 : r.trend_high; }
+  low_share: function(r) { return r.low_share; },
+  high_share: function(r) { return r.high_share; },
+  talk_50_plus: function(r) { return r.talk_50_plus; }
 };
 
 function matchesQuery(r) {
@@ -841,7 +897,8 @@ function buildCSS() {
     P + '-root .spark{display:inline-block;vertical-align:middle;width:64px;height:22px;',
       'overflow:visible;margin-right:' + S.s3 + 'px;}',
     P + '-root .sp-val{display:inline-block;vertical-align:middle;min-width:30px;text-align:right;',
-      'font-weight:700;color:' + C.ink + ';}',
+      'font-weight:400;color:' + C.ink2 + ';}',
+    P + '-root td.zero .sp-val{color:' + C.muted2 + ';}',
 
     // Поиск по названию: появляется, когда команд больше одной страницы
     P + '-root .search{position:relative;flex:0 0 auto;}',
@@ -1063,12 +1120,12 @@ function tableHead() {
   var groups = [
     { g: CFG.tableGroups[0], cols: [
       { key: 'low', label: 'Чел.', tip: 'Сотрудников в категории «недоработка» на последней неделе' },
-      { key: 'trend_low', label: CFG.text.trendCol, tip: CFG.text.trendLowTip },
+      { key: 'low_share', label: CFG.text.shareCol, tip: CFG.text.shareTip },
       { key: 'low_delta', label: 'Δ нед.', tip: 'Изменение к предыдущей неделе. Рост — хуже, снижение — лучше' }
     ] },
     { g: CFG.tableGroups[1], cols: [
       { key: 'high', label: 'Чел.', tip: 'Сотрудников в категории «переработка» на последней неделе' },
-      { key: 'trend_high', label: CFG.text.trendCol, tip: CFG.text.trendHighTip },
+      { key: 'high_share', label: CFG.text.shareCol, tip: CFG.text.shareTip },
       { key: 'high_delta', label: 'Δ нед.', tip: 'Изменение к предыдущей неделе. Рост — хуже, снижение — лучше' }
     ] },
     { g: CFG.tableGroups[2], cols: [
@@ -1134,7 +1191,7 @@ function tableBody() {
 
   var h = [];
   // Итог первой строкой: он же — способ вернуться ко всем подразделениям.
-  h.push(tableTr(tableRow(null, TOTAL.snap, TOTAL.series), true));
+  h.push(tableTr(tableRow(null, TOTAL.snap, TOTAL.weeks), true));
   for (var i = from; i < to; i++) h.push(tableTr(rows[i], false));
   return { html: h.join(''), from: from, to: to, total: rows.length, pages: totalPages };
 }
@@ -1163,22 +1220,26 @@ function sparkSVG(values, color) {
 
 function sparkTip(r, values, group) {
   var parts = [];
-  for (var i = 0; i < MODEL.monthOrder.length; i++) {
-    var meta = MODEL.monthMeta[MODEL.monthOrder[i]];
-    parts.push(MONTHS_SHORT[meta.m] + ' ' + (values[i] === null ? DASH : fmtPct(values[i])));
+  for (var i = 0; i < MODEL.weekOrder.length; i++) {
+    var dk = MODEL.weekMeta[MODEL.weekOrder[i]].date;
+    parts.push(pad2(dk.d) + '.' + pad2(dk.m + 1) + ' ' + (values[i] === null ? DASH : fmtPct(values[i])));
   }
   return {
-    title: (r.isTotal ? CFG.text.allDepts : r.name) + ' · ' + group.name.toLowerCase() + ' по месяцам',
-    text: parts.join(' · '),
-    note: 'Доля от состава месяца (cat_month), не от недели'
+    title: (r.isTotal ? CFG.text.allDepts : r.name) + ' · ' + group.name.toLowerCase() + ' по неделям',
+    text: parts.length ? parts.join(' · ') : 'Строк по неделям в выдаче нет',
+    note: CFG.text.sparkNote
   };
 }
 
-function cellSpark(r, values, last, group) {
-  return '<td class="sp-cell"' + tipAttr(sparkTip(r, values, group)) + '>' +
-    sparkSVG(values, group.color) +
-    '<span class="sp-val' + (last === null ? ' zero' : '') + '">' +
-    esc(last === null ? DASH : fmtPct(last)) + '</span></td>';
+// Число — недельная доля из снимка, как в 1.0. Линия — те же доли по
+// закрытым неделям; нет строк 'week' — остаётся одно число.
+function cellSpark(r, values, share, group) {
+  var hasLine = false;
+  for (var i = 0; i < values.length; i++) if (values[i] !== null) hasLine = true;
+  return '<td class="sp-cell' + (share === 0 ? ' zero' : '') + '"' +
+    (hasLine ? tipAttr(sparkTip(r, values, group)) : '') + '>' +
+    (hasLine ? sparkSVG(values, group.color) : '') +
+    '<span class="sp-val">' + esc(fmtPct(share)) + '</span></td>';
 }
 
 function tableTr(r, isTotal) {
@@ -1192,10 +1253,10 @@ function tableTr(r, isTotal) {
   h.push('<td class="txt"><div class="team">' + esc(name) + '</div></td>');
   h.push('<td class="lead">' + esc(fmtInt(r.cnt_emp)) + '</td>');
   h.push(cellNum(r.low, 'grp lead'));
-  h.push(cellSpark(r, r.spark_low, r.trend_low, CFG.tableGroups[0]));
+  h.push(cellSpark(r, r.spark_low, r.low_share, CFG.tableGroups[0]));
   h.push(cellDelta(r.low_delta));
   h.push(cellNum(r.high, 'grp lead'));
-  h.push(cellSpark(r, r.spark_high, r.trend_high, CFG.tableGroups[1]));
+  h.push(cellSpark(r, r.spark_high, r.high_share, CFG.tableGroups[1]));
   h.push(cellDelta(r.high_delta));
   h.push(cellNum(r.talk_20_30, 'grp'));
   h.push(cellNum(r.talk_30_50, ''));

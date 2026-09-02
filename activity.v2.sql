@@ -6,25 +6,35 @@
 -- ЧТО ИЗМЕНИЛОСЬ ПРОТИВ 1.0: точные гранулярности.
 --   В 1.0 недельный снимок и периодовые признаки сводились к месяцу — и на
 --   стыке месяцев сотрудник из последней недели попадал в два месяца, а по
---   прогулам приходилось брать максимум по месяцам. Здесь выдача из двух
+--   прогулам приходилось брать максимум по месяцам. Здесь выдача из трёх
 --   видов строк, каждый — на своей гранулярности:
 --     row_kind = 'month'    → подразделение × месяц: состав по категориям
---                             и компоненты средних (для стека и линий)
+--                             и компоненты средних (стек и линии)
+--     row_kind = 'week'     → подразделение × неделя: численность и категории
+--                             недели (спарклайны недельных долей в таблице)
 --     row_kind = 'snapshot' → подразделение: снимок последней закрытой
---                             недели и периодовые признаки (для KPI и таблицы)
---   Набор колонок у обоих видов один; чужие для вида колонки равны 0.
+--                             недели и периодовые признаки (KPI и таблица)
+--   Набор колонок у всех видов один; чужие для вида колонки равны 0.
+--   Недельная доля в таблице — из 'snapshot', как в 1.0; ветка 'week'
+--   лишь добавляет к ней историю тех же долей по неделям.
 --
--- ЦЕНА: два простых прохода по витрине вместо одного (UNION ALL). Оба —
---   плоские GROUP BY без оконных функций и без делений. Если диалект
---   поддерживает GROUPING SETS, можно свести к одному проходу:
+-- ЦЕНА: три плоских прохода по витрине (UNION ALL) вместо одного, все —
+--   GROUP BY без оконных функций и без делений. Если диалект поддерживает
+--   GROUPING SETS, сводится к одному проходу:
 --     GROUP BY GROUPING SETS ((lvl_down_nm, dateTrunc('month', calendar_dt)),
+--                             (lvl_down_nm, dateTrunc('week', calendar_dt)),
 --                             (lvl_down_nm))
---   JS различает виды строк и по row_kind, и по пустому date_structure,
---   поэтому с таким запросом работает тот же activity.v2.chart.js.
+--   JS различает виды строк по row_kind, а без него — по date_structure
+--   (пусто → snapshot), поэтому с таким запросом работает тот же скрипт.
 --
--- 28 колонок: row_kind, 2 измерения, 25 показателей. Все показатели
--- аддитивные; доли, средние, дельты, итоги категорий и «все подразделения»
--- считает JS.
+-- НЕДЕЛЯ: dateTrunc('week', calendar_dt) — понедельник. Если в витрине есть
+--   своя колонка недели (week_dt) с той же разметкой, что у cat_week, —
+--   подставьте её. flag_last_week в строках 'week' говорит JS, какая неделя
+--   последняя закрытая: всё, что позже, в спарклайн не попадает.
+--
+-- 29 колонок: row_kind, 2 измерения, flag_last_week, 25 показателей.
+-- Все показатели аддитивные; доли, средние, дельты, итоги категорий
+-- и «все подразделения» считает JS.
 --
 -- ПРЕДПОСЫЛКА: сотрудник относится ровно к одному lvl_down_nm.
 -- ============================================================================
@@ -45,6 +55,7 @@ SELECT
   0 AS `high_fresh`, 0 AS `high_long`, 0 AS `prev_high`,
   0 AS `talk_20_30`, 0 AS `talk_30_50`, 0 AS `talk_50_plus`, 0 AS `prev_talk_20_30`,
   0 AS `leave_fresh`, 0 AS `leave_long`, 0 AS `weekend_fresh`, 0 AS `weekend_long`,
+  0 AS `flag_last_week`,
 
   sumIf(duration_hour_correct, plan_working_day_flg = 1) AS `dur_plan_sum`,
   countIf(plan_working_day_flg = 1)                      AS `dur_plan_cnt`,
@@ -65,6 +76,46 @@ FROM
 GROUP BY
   `lvl_down_nm`,
   dateTrunc('month', calendar_dt)
+
+UNION ALL
+
+-- --------------------------------------------------------------- неделя ----
+-- Те же определения категорий, что в снимке, но на каждую неделю и без
+-- отбора по flag_last_week: неделя и есть гранулярность. Talk-полосы,
+-- периодовые признаки и прошлая неделя здесь не нужны — нули.
+SELECT
+  'week' AS `row_kind`,
+  `lvl_down_nm` AS `lvl_down_nm`,
+  dateTrunc('week', calendar_dt) AS `date_structure`,
+
+  0 AS `cnt_month_low`, 0 AS `cnt_month_normal`, 0 AS `cnt_month_high`, 0 AS `cnt_month_grey`,
+
+  count(DISTINCT mdm_employee_rk) AS `cnt_emp`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('low', 'super_low') AND coalesce(weeks_in_current_category, 0) <= 2
+  ) AS `low_fresh`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('low', 'super_low') AND weeks_in_current_category > 2
+  ) AS `low_long`,
+  0 AS `prev_low`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('high', 'super_high') AND coalesce(weeks_in_current_category, 0) <= 2
+  ) AS `high_fresh`,
+  count(DISTINCT mdm_employee_rk) FILTER (
+    WHERE cat_week IN ('high', 'super_high') AND weeks_in_current_category > 2
+  ) AS `high_long`,
+  0 AS `prev_high`,
+  0 AS `talk_20_30`, 0 AS `talk_30_50`, 0 AS `talk_50_plus`, 0 AS `prev_talk_20_30`,
+  0 AS `leave_fresh`, 0 AS `leave_long`, 0 AS `weekend_fresh`, 0 AS `weekend_long`,
+  max(flag_last_week) AS `flag_last_week`,
+
+  0 AS `dur_plan_sum`, 0 AS `dur_plan_cnt`, 0 AS `dur_all_sum`, 0 AS `dur_all_cnt`,
+  0 AS `talk_h_sum`, 0 AS `work_h_sum`
+FROM
+  prod_proteus.monitoring_work_activity_kavtorin
+GROUP BY
+  `lvl_down_nm`,
+  dateTrunc('week', calendar_dt)
 
 UNION ALL
 
@@ -127,6 +178,7 @@ SELECT
   count(DISTINCT mdm_employee_rk) FILTER (WHERE flg_absent_total > 5)                           AS `leave_long`,
   count(DISTINCT mdm_employee_rk) FILTER (WHERE flg_work_in_rest_total > 1 AND flg_work_in_rest_total <= 5) AS `weekend_fresh`,
   count(DISTINCT mdm_employee_rk) FILTER (WHERE flg_work_in_rest_total > 5)                                 AS `weekend_long`,
+  0 AS `flag_last_week`,
 
   0 AS `dur_plan_sum`, 0 AS `dur_plan_cnt`, 0 AS `dur_all_sum`, 0 AS `dur_all_cnt`,
   0 AS `talk_h_sum`, 0 AS `work_h_sum`
