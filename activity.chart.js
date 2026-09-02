@@ -39,7 +39,7 @@ var CFG = {
 
   text: {
     title: 'Мониторинг рабочей активности',
-    subtitle: 'Снимок последней закрытой недели, сравнение с предыдущей',
+    subtitle: 'Статистика за последнюю закрытую неделю, сравнение с предыдущей',
     noDataHead: 'Нет данных по выбранным разрезам',
     noData: 'Снимите один из фильтров в шапке отчёта.',
     allDepts: 'Все подразделения',
@@ -138,7 +138,7 @@ var CFG = {
         { key: 'low_fresh', label: '1–2 недели' },
         { key: 'low_long', label: 'больше 2 недель' }
       ],
-      tip: 'Сотрудники с недельной активностью ниже нормы (cat_week = low или super_low) в последней закрытой неделе. Ниже — сколько недель человек уже в этой категории.'
+      tip: 'Сотрудники с недельной активностью ниже нормы (Категории low или super_low) в последней закрытой неделе. Ниже — сколько недель человек уже в этой категории.'
     },
     {
       key: 'high', title: 'Переработка',
@@ -147,7 +147,7 @@ var CFG = {
         { key: 'high_fresh', label: '1–2 недели' },
         { key: 'high_long', label: 'больше 2 недель' }
       ],
-      tip: 'Сотрудники с недельной активностью выше нормы (cat_week = high или super_high) в последней закрытой неделе. Ниже — сколько недель человек уже в этой категории.'
+      tip: 'Сотрудники с недельной активностью выше нормы (Категории high или super_high) в последней закрытой неделе. Ниже — сколько недель человек уже в этой категории.'
     },
     {
       key: 'talk', title: 'Звонки в Talk 20–30%',
@@ -591,31 +591,26 @@ function buildCSS() {
   return [
     '<style>',
     // --- Каркас листа -------------------------------------------------------
-    P + '-root{width:100%;min-height:100%;box-sizing:border-box;padding:' + S.s7 + 'px;',
+    P + '-root{width:100%;min-height:100%;box-sizing:border-box;padding:0;',
       'font-family:' + F.family + ';font-size:' + F.body + 'px;color:' + C.ink2 + ';',
-      'background:' + C.bg + ';-webkit-font-smoothing:antialiased;}',
-    P + '-root *{box-sizing:border-box;font-family:inherit;}',
+      'background:transparent;-webkit-font-smoothing:antialiased;}',
+    P + '-root *{box-sizing:border-box;font-family:inherit;outline: none;}',
     P + '-root .sheet{display:flex;flex-direction:column;gap:' + S.s8 + 'px;}',
 
     // --- Шапка листа --------------------------------------------------------
-    P + '-root .head{display:flex;align-items:flex-start;justify-content:space-between;',
-      'gap:' + S.s6 + 'px;flex-wrap:wrap;}',
+    P + '-root .head{margin:0 8px;padding:8px 10px;border:1px solid ' + C.line + ';border-radius:10px;background:#f8f9fb;display:flex;gap:8px;align-items:center;flex-wrap:wrap;}}',
     P + '-root .h-title{margin:0;font-size:' + F.head + 'px;line-height:1.15;font-weight:800;',
       'letter-spacing:-.01em;color:' + C.ink + ';}',
     P + '-root .h-sub{margin-top:' + S.s2 + 'px;font-size:' + F.note + 'px;font-weight:600;',
       'color:' + C.muted + ';line-height:1.35;}',
 
     // Чипы фильтра (§4.2): синий — снимается, серый — контекст
+    '.hqp-fbar-lbl{font-size:10.5px;font-weight:600;color:' + C.muted + ';text-transform:uppercase;letter-spacing:.3px;}',
     P + '-root .chips{display:flex;align-items:center;gap:' + S.s4 + 'px;flex-wrap:wrap;}',
-    P + '-root .chip{display:inline-flex;align-items:center;gap:7px;border-radius:' + R.pill + 'px;',
-      'padding:5px 12px;font-size:' + F.body + 'px;font-weight:700;',
-      'background:' + C.blueBg + ';color:' + C.chipTx + ';border:1px solid ' + C.chipLine + ';',
-      'max-width:340px;}',
+    P + '-root .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;background:#fff;border:1px solid ' + C.line + ';border-radius:8px;font-size:11.5px;color:' + C.ink2 + ';}',
     P + '-root .chip b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}',
-    P + '-root .chip .x{width:15px;height:15px;border-radius:50%;border:0;padding:0;cursor:pointer;',
-      'background:rgba(43,95,208,.14);color:' + C.chipTx + ';font-size:11px;line-height:1;flex:0 0 auto;',
-      'display:inline-flex;align-items:center;justify-content:center;}',
-    P + '-root .chip .x:hover{background:rgba(43,95,208,.28);}',
+    P + '-root .chip .x{background: none;border: none;cursor:pointer;color:' + C.muted + ';font-weight:600;padding:0 2px;}',
+    P + '-root .chip .x:hover{color:' + C.ink + ';}',
     P + '-root .chip.bench{background:' + C.neutralBg + ';color:' + C.ink2 + ';border-color:' + C.line + ';}',
     P + '-root .chip.bench b{color:' + C.ink + ';}',
 
@@ -709,7 +704,7 @@ function buildCSS() {
     P + '-root .g-row th.txt{text-align:left;color:' + C.muted + ';}',
     P + '-root .g-row th.rs{vertical-align:bottom;border-bottom:1px solid ' + C.line + ';}',
     P + '-root .g-row th.gcol{border-bottom-style:solid;border-bottom-width:2px;}',
-    P + '-root .s-row th{border-bottom:1px solid ' + C.line + ';padding-top:0;}',
+    P + '-root .s-row th{border-bottom:1px solid ' + C.line + ';}',
     P + '-root .s-row th.sortable{cursor:pointer;user-select:none;',
       'transition:color .12s ease,background .12s ease;}',
     P + '-root .s-row th.sortable:hover{color:' + C.ink + ';background:' + C.hover + ';}',
@@ -862,7 +857,7 @@ function kpiCard(k, snap) {
   } else {
     h.push('<span class="nocmp"' + tipAttr({
       title: k.title,
-      text: 'Метрика считается за весь загруженный период, а не за неделю, — сравнивать с прошлой неделей нечего.'
+      text: 'Метрика считается за весь загруженный период, а не за неделю, - нет базы для сравнения с прошлой неделей.'
     }) + '>' + esc(CFG.text.notCompared) + '</span>');
   }
   h.push('</div>');
@@ -1090,25 +1085,16 @@ function buildHTML() {
   h.push('<div class="sheet">');
 
   // --- Шапка листа
-  h.push('<div class="head">');
-  h.push('<div class="t-wrap">');
-  h.push('<h1 class="h-title">' + esc(T.title) + '</h1>');
-  h.push('<div class="h-sub">' + esc(T.subtitle + ' · ' + fmtInt(MODEL.depts.length) +
-    ' подразд. · ' + fmtInt(MODEL.monthOrder.length) + ' мес. динамики') +
-    (state.dept !== null ? esc(' · ' + T.scopeNote) : '') + '</div>');
-  h.push('</div>');
-  h.push('<div class="chips">');
   if (state.dept !== null) {
-    h.push('<span class="chip">' + esc(T.filterLabel) + ': <b>' + esc(state.dept) + '</b>' +
+    h.push('<div class="head">');
+    h.push('<span class="hqp-fbar-lbl">Команда:</span>');
+    h.push('<div class="chips">');
+    h.push('<span class="chip"><b>' + esc(state.dept) + '</b>' +
       '<button type="button" class="x" data-act="dept" data-arg="" aria-label="' +
       esc(T.filterReset) + '">×</button></span>');
+      h.push('</div>');
+    h.push('</div>');
   }
-  h.push('<span class="chip bench"' + tipAttr({
-    title: scopeLabel(),
-    text: 'Сотрудники с активностью на последней закрытой неделе.'
-  }) + '>Активная численность: <b>' + esc(fmtInt(snap.cnt_emp)) + '</b></span>');
-  h.push('</div>');
-  h.push('</div>');
 
   // --- KPI-полоса
   h.push('<div class="kpis">');
