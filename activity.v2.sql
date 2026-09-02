@@ -8,15 +8,18 @@
 --   стыке месяцев сотрудник из последней недели попадал в два месяца, а по
 --   прогулам приходилось брать максимум по месяцам. Здесь выдача из трёх
 --   видов строк, каждый — на своей гранулярности:
---     row_kind = 'month'    → подразделение × месяц: состав по категориям
---                             и компоненты средних (стек и линии)
---     row_kind = 'week'     → подразделение × неделя: численность и категории
---                             недели (спарклайны недельных долей в таблице)
+--     row_kind = 'month'    → подразделение × месяц: состав по cat_month
+--                             и компоненты средних (стек и линии по месяцам)
+--     row_kind = 'week'     → подразделение × неделя: состав по cat_week,
+--                             численность и компоненты средних (стек и линии
+--                             по неделям, спарклайны недельных долей в таблице)
 --     row_kind = 'snapshot' → подразделение: снимок последней закрытой
 --                             недели и периодовые признаки (KPI и таблица)
 --   Набор колонок у всех видов один; чужие для вида колонки равны 0.
---   Недельная доля в таблице — из 'snapshot', как в 1.0; ветка 'week'
---   лишь добавляет к ней историю тех же долей по неделям.
+--   cnt_cat_* в строках 'month' считаются по cat_month, в строках 'week' —
+--   по cat_week: одна и та же мера на двух гранулярностях, JS переключает их
+--   кнопкой «Месяцы / Недели». Недельная доля в таблице — из 'snapshot',
+--   как в 1.0; её последняя точка совпадает с cnt_cat_low / cnt_emp недели.
 --
 -- ЦЕНА: три плоских прохода по витрине (UNION ALL) вместо одного, все —
 --   GROUP BY без оконных функций и без делений. Если диалект поддерживает
@@ -45,10 +48,10 @@ SELECT
   `lvl_down_nm` AS `lvl_down_nm`,
   dateTrunc('month', calendar_dt) AS `date_structure`,
 
-  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month IN ('low', 'super_low'))   AS `cnt_month_low`,
-  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month = 'normal')                AS `cnt_month_normal`,
-  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month IN ('high', 'super_high')) AS `cnt_month_high`,
-  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month = 'grey')                  AS `cnt_month_grey`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month IN ('low', 'super_low'))   AS `cnt_cat_low`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month = 'normal')                AS `cnt_cat_normal`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month IN ('high', 'super_high')) AS `cnt_cat_high`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_month = 'grey')                  AS `cnt_cat_grey`,
 
   0 AS `cnt_emp`,
   0 AS `low_fresh`,  0 AS `low_long`,  0 AS `prev_low`,
@@ -80,37 +83,40 @@ GROUP BY
 UNION ALL
 
 -- --------------------------------------------------------------- неделя ----
--- Те же определения категорий, что в снимке, но на каждую неделю и без
--- отбора по flag_last_week: неделя и есть гранулярность. Talk-полосы,
+-- Те же меры, что в месяце, но на неделю и по cat_week: состав, численность
+-- и компоненты средних. Полосы «сколько недель в категории», Talk-полосы,
 -- периодовые признаки и прошлая неделя здесь не нужны — нули.
 SELECT
   'week' AS `row_kind`,
   `lvl_down_nm` AS `lvl_down_nm`,
   dateTrunc('week', calendar_dt) AS `date_structure`,
 
-  0 AS `cnt_month_low`, 0 AS `cnt_month_normal`, 0 AS `cnt_month_high`, 0 AS `cnt_month_grey`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_week IN ('low', 'super_low'))   AS `cnt_cat_low`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_week = 'normal')                AS `cnt_cat_normal`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_week IN ('high', 'super_high')) AS `cnt_cat_high`,
+  count(DISTINCT mdm_employee_rk) FILTER (WHERE cat_week = 'grey')                  AS `cnt_cat_grey`,
 
   count(DISTINCT mdm_employee_rk) AS `cnt_emp`,
-  count(DISTINCT mdm_employee_rk) FILTER (
-    WHERE cat_week IN ('low', 'super_low') AND coalesce(weeks_in_current_category, 0) <= 2
-  ) AS `low_fresh`,
-  count(DISTINCT mdm_employee_rk) FILTER (
-    WHERE cat_week IN ('low', 'super_low') AND weeks_in_current_category > 2
-  ) AS `low_long`,
-  0 AS `prev_low`,
-  count(DISTINCT mdm_employee_rk) FILTER (
-    WHERE cat_week IN ('high', 'super_high') AND coalesce(weeks_in_current_category, 0) <= 2
-  ) AS `high_fresh`,
-  count(DISTINCT mdm_employee_rk) FILTER (
-    WHERE cat_week IN ('high', 'super_high') AND weeks_in_current_category > 2
-  ) AS `high_long`,
-  0 AS `prev_high`,
+  0 AS `low_fresh`,  0 AS `low_long`,  0 AS `prev_low`,
+  0 AS `high_fresh`, 0 AS `high_long`, 0 AS `prev_high`,
   0 AS `talk_20_30`, 0 AS `talk_30_50`, 0 AS `talk_50_plus`, 0 AS `prev_talk_20_30`,
   0 AS `leave_fresh`, 0 AS `leave_long`, 0 AS `weekend_fresh`, 0 AS `weekend_long`,
   max(flag_last_week) AS `flag_last_week`,
 
-  0 AS `dur_plan_sum`, 0 AS `dur_plan_cnt`, 0 AS `dur_all_sum`, 0 AS `dur_all_cnt`,
-  0 AS `talk_h_sum`, 0 AS `work_h_sum`
+  sumIf(duration_hour_correct, plan_working_day_flg = 1) AS `dur_plan_sum`,
+  countIf(plan_working_day_flg = 1)                      AS `dur_plan_cnt`,
+  sum(duration_hour_correct)                             AS `dur_all_sum`,
+  count(duration_hour_correct)                           AS `dur_all_cnt`,
+  sumIf(
+    talk_call_duration_h,
+    (weekday IN (1, 2, 3, 4, 5) AND plan_working_day_flg IS NULL AND duration_hour > 0)
+    OR plan_working_day_flg = 1
+  ) AS `talk_h_sum`,
+  sumIf(
+    CASE WHEN reduced_duration_hour > 7 THEN reduced_duration_hour ELSE duration_hour END,
+    (weekday IN (1, 2, 3, 4, 5) AND plan_working_day_flg IS NULL AND duration_hour > 0)
+    OR plan_working_day_flg = 1
+  ) AS `work_h_sum`
 FROM
   prod_proteus.monitoring_work_activity_kavtorin
 GROUP BY
@@ -127,7 +133,7 @@ SELECT
   `lvl_down_nm` AS `lvl_down_nm`,
   NULL AS `date_structure`,
 
-  0 AS `cnt_month_low`, 0 AS `cnt_month_normal`, 0 AS `cnt_month_high`, 0 AS `cnt_month_grey`,
+  0 AS `cnt_cat_low`, 0 AS `cnt_cat_normal`, 0 AS `cnt_cat_high`, 0 AS `cnt_cat_grey`,
 
   -- активная численность последней закрытой недели: знаменатель всех долей
   count(DISTINCT mdm_employee_rk) FILTER (WHERE flag_last_week = 1) AS `cnt_emp`,

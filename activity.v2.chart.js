@@ -53,15 +53,22 @@ var CFG = {
   sparkWeeks: 12,             // сколько закрытых недель показывает спарклайн
 
   text: {
-    title: 'Мониторинг рабочей активности',
     subtitle: 'Снимок последней закрытой недели, сравнение с предыдущей',
+    sliceLabel: 'Срез:',
+    resetAll: 'Сбросить всё',
+    periodLabel: 'Период',
+    grainMonth: 'Месяцы',
+    grainWeek: 'Недели',
+    grainTip: 'Гранулярность состава и динамики: категория месяца (cat_month) или категория недели (cat_week)',
     noDataHead: 'Нет данных по выбранным разрезам',
     noData: 'Снимите один из фильтров в шапке отчёта.',
     allDepts: 'Все подразделения',
     filterLabel: 'Команда',
-    filterReset: 'Снять фильтр',
-    scopeNote: 'фильтр действует на показатели и графики, таблица показывает все подразделения',
-    stackTitle: 'Состав по категориям месяца',
+    filterReset: 'Снять срез',
+    scopeNote: 'срез действует на показатели и графики, таблица показывает все подразделения',
+    stackTitle: 'Состав по категориям',
+    stackSubMonth: 'по месяцам, категория месяца',
+    stackSubWeek: 'по неделям, категория недели',
     modeAbs: 'Люди',
     modePct: 'Доли',
     baseAll: 'по всем',
@@ -70,7 +77,7 @@ var CFG = {
     sparkNote: 'Доля от активной численности недели, последняя точка — та же, что число рядом',
     searchPh: 'Найти команду',
     searchClear: 'Очистить поиск',
-    stackNote: 'Клик по столбцу отмечает месяц на графиках справа, клик по легенде убирает категорию',
+    stackNote: 'Клик по столбцу — отметить период на графиках справа · клик по легенде — скрыть категорию',
     stackTotal: 'Всего в месяце',
     actTitle: 'Рабочая активность',
     actUnit: 'в среднем, ч/день',
@@ -79,11 +86,12 @@ var CFG = {
     avgHint: 'среднее',
     tableTitle: 'Детализация по подразделениям',
     tableNote: 'Клик по строке пересчитывает показатели наверху под эту команду',
-    rowTipHint: 'Нажмите на строку — показатели наверху пересчитаются по этой команде',
-    rowTipHintOff: 'Нажмите ещё раз, чтобы вернуться ко всем подразделениям',
-    sortHint: 'Сортировать по этой колонке',
+    rowTipHint: 'Клик — срез по команде: показатели и графики наверху пересчитаются',
+    rowTipHintOff: 'Клик — снять срез, вернуться ко всем подразделениям',
+    sortHint: 'Клик — сортировка по колонке',
     partsTitle: 'Состав категории',
     monthBase: 'к прошлому месяцу',
+    weekBase: 'к прошлой неделе',
     noBase: 'нет базы',
     notCompared: 'не сравнивается',
     pagerShown: 'Показаны',
@@ -95,7 +103,8 @@ var CFG = {
 
   // Токены дизайн-системы TeamPulse (DESIGN_SYSTEM.md §2). Значения не правим.
   colors: {
-    bg: '#f4f5f7',
+    bg: 'transparent',   // фон отдаёт Proteus, как в hq-portrait
+    bar: '#f4f5f7',      // полоса срезов
     card: '#ffffff',
     line: '#e7e9ee',
     line2: '#eef0f3',
@@ -142,13 +151,13 @@ var CFG = {
   // Категории месяца. Палитра живёт здесь, а не в SQL (§2: цвета только
   // в токенах и рисовальном слое). Крупная доля — бледнее, редкая — насыщеннее.
   cats: [
-    { key: 'grey', field: 'cnt_month_grey', name: 'Grey', color: '#c7c8cc',
+    { key: 'grey', field: 'cnt_cat_grey', name: 'Grey', color: '#c7c8cc',
       hint: 'Активность не размечена' },
-    { key: 'under', field: 'cnt_month_low', name: 'Недоработка', color: '#d4a5b5',
+    { key: 'under', field: 'cnt_cat_low', name: 'Недоработка', color: '#d4a5b5',
       hint: 'Категории low и super_low' },
-    { key: 'normal', field: 'cnt_month_normal', name: 'Нормал', color: '#d0e4e2',
+    { key: 'normal', field: 'cnt_cat_normal', name: 'Нормал', color: '#d0e4e2',
       hint: 'Категория normal' },
-    { key: 'over', field: 'cnt_month_high', name: 'Переработка', color: '#5d9acb',
+    { key: 'over', field: 'cnt_cat_high', name: 'Переработка', color: '#5d9acb',
       hint: 'Категории high и super_high' }
   ],
 
@@ -223,7 +232,8 @@ var __S = window.__pvtState;
 if (!__S[CFG.ns]) {
   __S[CFG.ns] = {
     dept: null,        // выбранное подразделение или null = все
-    month: null,       // отмеченный месяц на линиях или null
+    period: null,      // отмеченный период (месяц или неделя) или null
+    grain: 'month',    // гранулярность состава и динамики: 'month' | 'week'
     hidden: {},        // скрытые категории стека
     page: 1,
     sortKey: 'cnt_emp',
@@ -361,13 +371,22 @@ var WEEK_KEYS = ['cnt_emp', 'prev_low', 'low_fresh', 'low_long',
 // Периодовые признаки (за весь период).
 var PERIOD_KEYS = ['leave_fresh', 'leave_long', 'weekend_fresh', 'weekend_long'];
 
-// Недельный ряд для спарклайнов: численность и две полосы каждой категории.
-var WEEKROW_KEYS = ['cnt_emp', 'low_fresh', 'low_long', 'high_fresh', 'high_long'];
-
 // Месячные величины: чистые суммы, складываются в любом разрезе.
-var MONTH_KEYS = ['cnt_month_grey', 'cnt_month_low', 'cnt_month_normal', 'cnt_month_high',
+var MONTH_KEYS = ['cnt_cat_grey', 'cnt_cat_low', 'cnt_cat_normal', 'cnt_cat_high',
   'dur_plan_sum', 'dur_plan_cnt', 'dur_all_sum', 'dur_all_cnt',
   'talk_h_sum', 'work_h_sum'];
+
+// Строки 'week': численность, состав по cat_week и компоненты средних (те же
+// колонки, что у месяца) — стек и линии по неделям, спарклайны в таблице.
+// Полосы категорий читаем тоже: старая выдача 2.0 отдавала в неделях их.
+var WEEKROW_KEYS = ['cnt_emp', 'low_fresh', 'low_long', 'high_fresh', 'high_long'].concat(MONTH_KEYS);
+
+// Выдача 1.0 называла колонки состава cnt_month_*: читаем оба имени.
+function field(row, key) {
+  var v = row[key];
+  if ((v === null || v === undefined) && key.indexOf('cnt_cat_') === 0) v = row['cnt_month_' + key.slice(8)];
+  return num(v);
+}
 
 // Итоги, которые SQL не отдаёт: полосы непересекающиеся и покрывают категорию
 // целиком, поэтому итог = их сумма. Пары «итог: из чего складывается».
@@ -391,7 +410,7 @@ function rowKind(row, mk) {
 }
 
 function buildModel() {
-  var byName = {}, order = [], monthSet = {}, weekSet = {}, exact = false, i, k;
+  var byName = {}, order = [], monthSet = {}, weekSet = {}, exact = false, weekMeasures = false, i, k;
   var SNAP_KEYS = WEEK_KEYS.concat(PERIOD_KEYS);
 
   for (i = 0; i < rawData.length; i++) {
@@ -429,7 +448,8 @@ function buildModel() {
       weekSet[wKey].flag = Math.max(weekSet[wKey].flag, num(row[CFG.fields.flag]));
       var wrec = dept.weeks[wKey];
       if (!wrec) { wrec = zeroBag(WEEKROW_KEYS); dept.weeks[wKey] = wrec; }
-      for (k = 0; k < WEEKROW_KEYS.length; k++) wrec[WEEKROW_KEYS[k]] += num(row[WEEKROW_KEYS[k]]);
+      for (k = 0; k < WEEKROW_KEYS.length; k++) wrec[WEEKROW_KEYS[k]] += field(row, WEEKROW_KEYS[k]);
+      if (wrec.dur_all_cnt > 0 || wrec.cnt_cat_low + wrec.cnt_cat_normal + wrec.cnt_cat_high + wrec.cnt_cat_grey > 0) weekMeasures = true;
       continue;
     }
     if (!mk) continue;
@@ -437,7 +457,7 @@ function buildModel() {
     monthSet[mKey] = mk;
     var mrec = dept.months[mKey];
     if (!mrec) { mrec = zeroBag(MONTH_KEYS); dept.months[mKey] = mrec; }
-    for (k = 0; k < MONTH_KEYS.length; k++) mrec[MONTH_KEYS[k]] += num(row[MONTH_KEYS[k]]);
+    for (k = 0; k < MONTH_KEYS.length; k++) mrec[MONTH_KEYS[k]] += field(row, MONTH_KEYS[k]);
     for (k = 0; k < WEEK_KEYS.length; k++) dept.fbWeek[WEEK_KEYS[k]] += num(row[WEEK_KEYS[k]]);
     for (k = 0; k < PERIOD_KEYS.length; k++) {
       dept.fbPeriod[PERIOD_KEYS[k]] = Math.max(dept.fbPeriod[PERIOD_KEYS[k]], num(row[PERIOD_KEYS[k]]));
@@ -457,8 +477,8 @@ function buildModel() {
   for (var mk2 in monthSet) if (monthSet.hasOwnProperty(mk2)) monthOrder.push(mk2);
   monthOrder.sort();
 
-  // Недели: только закрытые (до недели с flag_last_week = 1 включительно),
-  // последние CFG.sparkWeeks штук. Флага нет ни у одной — берём все.
+  // Недели: только закрытые (до недели с flag_last_week = 1 включительно).
+  // Флага нет ни у одной — берём все. Спарклайны берут последние CFG.sparkWeeks.
   var weekOrder = [], lastClosed = null;
   for (var wk in weekSet) if (weekSet.hasOwnProperty(wk)) weekOrder.push(wk);
   weekOrder.sort();
@@ -468,11 +488,10 @@ function buildModel() {
     for (i = 0; i < weekOrder.length; i++) if (weekOrder[i] <= lastClosed) cut.push(weekOrder[i]);
     weekOrder = cut;
   }
-  if (weekOrder.length > CFG.sparkWeeks) weekOrder = weekOrder.slice(weekOrder.length - CFG.sparkWeeks);
 
   return {
     depts: order, byName: byName, monthOrder: monthOrder, monthMeta: monthSet,
-    weekOrder: weekOrder, weekMeta: weekSet, cache: {}, exact: exact
+    weekOrder: weekOrder, weekMeta: weekSet, weekMeasures: weekMeasures, cache: {}, exact: exact
   };
 }
 
@@ -539,6 +558,7 @@ function aggregate(name) {
       y: meta.y,
       m: meta.m,
       label: MONTHS_SHORT[meta.m],
+      sub: (i === 0 || meta.m === 0) ? String(meta.y) : null,   // ось X: год под первым и под январём
       full: MONTHS_FULL[meta.m] + ' ' + meta.y,
       cats: cats,
       total: sum,
@@ -547,8 +567,9 @@ function aggregate(name) {
     });
   }
 
-  // Недельный ряд: доли от активной численности каждой недели.
-  var weeks = [];
+  // Недельный ряд: те же точки, что по месяцам (состав, средние), плюс доли
+  // категорий от численности недели для спарклайнов.
+  var weeks = [], weekTotal = zeroBag(MONTH_KEYS), prevM = -1;
   for (i = 0; i < MODEL.weekOrder.length; i++) {
     var wKey = MODEL.weekOrder[i], wa = zeroBag(WEEKROW_KEYS), dk = MODEL.weekMeta[wKey].date;
     for (k = 0; k < list.length; k++) {
@@ -556,13 +577,25 @@ function aggregate(name) {
       if (!wr) continue;
       for (var q = 0; q < WEEKROW_KEYS.length; q++) wa[WEEKROW_KEYS[q]] += wr[WEEKROW_KEYS[q]];
     }
+    for (k = 0; k < MONTH_KEYS.length; k++) weekTotal[MONTH_KEYS[k]] += wa[MONTH_KEYS[k]];
+    var lowW = wa.cnt_cat_low > 0 ? wa.cnt_cat_low : wa.low_fresh + wa.low_long;
+    var highW = wa.cnt_cat_high > 0 ? wa.cnt_cat_high : wa.high_fresh + wa.high_long;
+    var wc = { grey: wa.cnt_cat_grey, under: wa.cnt_cat_low, normal: wa.cnt_cat_normal, over: wa.cnt_cat_high };
     weeks.push({
       key: wKey,
+      y: dk.y, m: dk.m, d: dk.d,
       label: pad2(dk.d) + '.' + pad2(dk.m + 1),
+      sub: i === 0 ? MONTHS_SHORT[dk.m] + ' ' + dk.y : (dk.m !== prevM ? MONTHS_SHORT[dk.m] : null),
+      full: 'неделя с ' + pad2(dk.d) + '.' + pad2(dk.m + 1) + '.' + dk.y,
+      cats: wc,
+      total: wc.grey + wc.under + wc.normal + wc.over,
+      act: ratioAct(wa),
+      talk: ratioTalk(wa),
       cnt: wa.cnt_emp,
-      lowShare: wa.cnt_emp > 0 ? (wa.low_fresh + wa.low_long) / wa.cnt_emp * 100 : null,
-      highShare: wa.cnt_emp > 0 ? (wa.high_fresh + wa.high_long) / wa.cnt_emp * 100 : null
+      lowShare: wa.cnt_emp > 0 ? lowW / wa.cnt_emp * 100 : null,
+      highShare: wa.cnt_emp > 0 ? highW / wa.cnt_emp * 100 : null
     });
+    prevM = dk.m;
   }
 
   var out = {
@@ -571,7 +604,9 @@ function aggregate(name) {
     series: series,
     weeks: weeks,
     avgAct: ratioAct(total),
-    avgTalk: ratioTalk(total)
+    avgTalk: ratioTalk(total),
+    avgActW: ratioAct(weekTotal),
+    avgTalkW: ratioTalk(weekTotal)
   };
   MODEL.cache[ck] = out;
   return out;
@@ -580,8 +615,13 @@ function aggregate(name) {
 // Строка таблицы: доли и дельты считаются здесь, SQL их не отдаёт.
 // Спарклайн — недельные доли той же категории (строки 'week'); недоработку
 // и переработку не складываем: это разные сигналы с разной логикой реагирования.
-function tableRow(name, snap, weeks) {
+function sparkWeeks(weeks) {
+  return weeks.length > CFG.sparkWeeks ? weeks.slice(weeks.length - CFG.sparkWeeks) : weeks;
+}
+
+function tableRow(name, snap, weeksAll) {
   var size = snap.cnt_emp;
+  var weeks = sparkWeeks(weeksAll);
   var spLow = [], spHigh = [], i;
   for (i = 0; i < weeks.length; i++) { spLow.push(weeks[i].lowShare); spHigh.push(weeks[i].highShare); }
   return {
@@ -618,12 +658,11 @@ var TABLE_ROWS = buildTableRows();
 // Состояние могло пережить перезапуск скрипта — проверяем, что выбранное
 // подразделение и месяц ещё существуют в новых данных.
 if (state.dept !== null && !MODEL.byName[state.dept]) state.dept = null;
-if (state.month !== null) {
-  var found = false;
-  for (var mi = 0; mi < MODEL.monthOrder.length; mi++) {
-    if (MODEL.monthOrder[mi] === state.month) found = true;
-  }
-  if (!found) state.month = null;
+if (state.grain === 'week' && !MODEL.weekMeasures) state.grain = 'month';
+if (state.period !== null) {
+  var found = false, keys = state.grain === 'week' ? MODEL.weekOrder : MODEL.monthOrder;
+  for (var mi = 0; mi < keys.length; mi++) if (keys[mi] === state.period) found = true;
+  if (!found) state.period = null;
 }
 if (visibleCats().length === 0) state.hidden = {};
 
@@ -656,6 +695,14 @@ function visibleTotal(point) {
 
 // Текущий срез листа: выбранное подразделение или все.
 function view() { return aggregate(state.dept); }
+
+// Ряд и среднее в текущей гранулярности.
+function seriesOf(v) { return state.grain === 'week' ? v.weeks : v.series; }
+function avgOf(v, metric) {
+  if (state.grain === 'week') return metric === 'act' ? v.avgActW : v.avgTalkW;
+  return metric === 'act' ? v.avgAct : v.avgTalk;
+}
+function baseOf() { return state.grain === 'week' ? CFG.text.weekBase : CFG.text.monthBase; }
 
 function scopeLabel() {
   return state.dept === null ? CFG.text.allDepts : state.dept;
@@ -727,19 +774,25 @@ function buildCSS() {
   return [
     '<style>',
     // --- Каркас листа -------------------------------------------------------
-    P + '-root{width:100%;min-height:100%;box-sizing:border-box;padding:' + S.s7 + 'px;',
+    P + '-root{width:100%;min-height:100%;box-sizing:border-box;padding:0 ' + S.s4 + 'px;',
       'font-family:' + F.family + ';font-size:' + F.body + 'px;color:' + C.ink2 + ';',
       'background:' + C.bg + ';-webkit-font-smoothing:antialiased;}',
     P + '-root *{box-sizing:border-box;font-family:inherit;}',
-    P + '-root .sheet{display:flex;flex-direction:column;gap:' + S.s8 + 'px;}',
+    P + '-root .sheet{display:flex;flex-direction:column;gap:' + S.s7 + 'px;}',
 
-    // --- Шапка листа --------------------------------------------------------
-    P + '-root .head{display:flex;align-items:flex-start;justify-content:space-between;',
+    // --- Шапка листа: контекст слева, гранулярность и численность справа ----
+    P + '-root .head{display:flex;align-items:center;justify-content:space-between;',
       'gap:' + S.s6 + 'px;flex-wrap:wrap;}',
-    P + '-root .h-title{margin:0;font-size:' + F.head + 'px;line-height:1.15;font-weight:800;',
-      'letter-spacing:-.01em;color:' + C.ink + ';}',
-    P + '-root .h-sub{margin-top:' + S.s2 + 'px;font-size:' + F.note + 'px;font-weight:600;',
-      'color:' + C.muted + ';line-height:1.35;}',
+    P + '-root .h-ctx{font-size:' + F.note + 'px;font-weight:600;color:' + C.muted + ';line-height:1.35;min-width:0;}',
+    P + '-root .h-right{display:flex;align-items:center;gap:' + S.s6 + 'px;flex-wrap:wrap;margin-left:auto;}',
+
+    // --- Полоса срезов сверху (§4.2), та же, что в hq-portrait -------------
+    P + '-root .fbar{padding:' + S.s4 + 'px ' + S.s5 + 'px;border:1px solid ' + C.line + ';border-radius:' + R.r3 + 'px;',
+      'background:' + C.bar + ';display:flex;gap:' + S.s4 + 'px;align-items:center;flex-wrap:wrap;}',
+    P + '-root .fbar-lbl{font-size:' + F.cap + 'px;font-weight:600;color:' + C.muted + ';text-transform:uppercase;letter-spacing:.3px;}',
+    P + '-root .freset{margin-left:auto;background:transparent;border:0;padding:0;color:' + C.muted + ';',
+      'font-size:' + F.note + 'px;font-weight:600;cursor:pointer;text-decoration:underline;}',
+    P + '-root .freset:hover{color:' + C.ink2 + ';}',
 
     // Чипы фильтра (§4.2): синий — снимается, серый — контекст
     P + '-root .chips{display:flex;align-items:center;gap:' + S.s4 + 'px;flex-wrap:wrap;}',
@@ -755,15 +808,15 @@ function buildCSS() {
     P + '-root .chip.bench{background:' + C.neutralBg + ';color:' + C.ink2 + ';border-color:' + C.line + ';}',
     P + '-root .chip.bench b{color:' + C.ink + ';}',
 
-    // --- Панель (§4.4) ------------------------------------------------------
-    P + '-root .panel{background:' + C.card + ';border-radius:' + R.r4 + 'px;',
-      'box-shadow:' + CFG.shadow + ';padding:' + S.s7 + 'px ' + S.s8 + 'px;}',
-    P + '-root .topline{display:flex;align-items:flex-start;justify-content:space-between;',
-      'gap:' + S.s6 + 'px;}',
-    P + '-root .t-wrap{min-width:0;}',
-    P + '-root .p-title{margin:0;font-size:' + F.lead + 'px;line-height:1.2;font-weight:700;color:' + C.ink + ';}',
-    P + '-root .p-sub{margin-top:' + S.s1 + 'px;font-size:' + F.note + 'px;font-weight:600;',
-      'color:' + C.muted + ';line-height:1.35;}',
+    // --- Панель (§4.4): шапка с чертой и тело — как в hq-portrait -----------
+    P + '-root .panel{background:' + C.card + ';border-radius:' + R.r4 + 'px;box-shadow:' + CFG.shadow + ';',
+      'overflow:hidden;display:flex;flex-direction:column;min-width:0;}',
+    P + '-root .panel-h{padding:' + S.s7 + 'px ' + S.s8 + 'px;border-bottom:1px solid ' + C.line2 + ';',
+      'display:flex;align-items:center;justify-content:space-between;gap:' + S.s6 + 'px;flex-wrap:wrap;}',
+    P + '-root .panel-b{padding:' + S.s7 + 'px ' + S.s8 + 'px;flex:1;display:flex;flex-direction:column;min-height:0;}',
+    P + '-root .t-wrap{display:flex;flex-direction:column;gap:' + S.s1 + 'px;min-width:0;flex:1 1 auto;}',
+    P + '-root .p-title{margin:0;font-size:' + F.head + 'px;line-height:1.2;font-weight:700;color:' + C.ink + ';}',
+    P + '-root .p-sub{font-size:' + F.note + 'px;font-weight:600;color:' + C.muted + ';line-height:1.35;}',
 
     // --- KPI-полоса (§4.3): одна высота строк во всей полосе ----------------
     P + '-root .kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:' + S.s6 + 'px;}',
@@ -811,10 +864,9 @@ function buildCSS() {
 
     // --- Рабочая зона: стек слева, динамика справа --------------------------
     P + '-root .shell{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,1fr);',
-      'gap:' + S.s8 + 'px;align-items:stretch;}',
-    P + '-root .shell>.panel{display:flex;flex-direction:column;min-width:0;}',
+      'gap:' + S.s7 + 'px;align-items:stretch;}',
     P + '-root .side{display:grid;grid-template-rows:1fr 1fr;gap:' + G.CHART_GAP + 'px;min-width:0;}',
-    P + '-root .plot{position:relative;flex:1;min-height:0;margin-top:' + S.s5 + 'px;}',
+    P + '-root .plot{position:relative;flex:1;min-height:0;}',
     P + '-root .plot svg{display:block;width:100%;overflow:visible;}',
     P + '-root .main-panel .plot{min-height:' + G.STACK_H + 'px;}',
     P + '-root .mini-panel .plot{min-height:' + G.LINE_H + 'px;}',
@@ -826,9 +878,9 @@ function buildCSS() {
 
     // Сегментированный переключатель (§4.9): живёт в шапке панели справа
     P + '-root .sub-tabs{display:inline-flex;gap:3px;background:' + C.line2 + ';',
-      'border-radius:' + R.r3 + 'px;padding:3px;flex:0 0 auto;}',
-    P + '-root .sub-tab{border:0;background:transparent;padding:4px 10px;border-radius:' + R.r2 + 'px;',
-      'font-weight:700;font-size:' + F.note + 'px;color:' + C.muted + ';cursor:pointer;',
+      'border-radius:' + R.r4 + 'px;padding:3px;flex:0 0 auto;}',
+    P + '-root .sub-tab{border:0;background:transparent;padding:6px 12px;border-radius:' + R.r3 + 'px;',
+      'font-weight:700;font-size:' + F.body + 'px;color:' + C.muted + ';cursor:pointer;',
       'transition:background .15s,color .15s;}',
     P + '-root .sub-tab:hover{color:' + C.ink2 + ';}',
     P + '-root .sub-tab.on{background:' + C.card + ';color:' + C.ink + ';box-shadow:' + CFG.shadow + ';cursor:default;}',
@@ -836,8 +888,6 @@ function buildCSS() {
       'justify-content:flex-end;margin-left:auto;}',
     // Не хватает ширины — переключатель и легенда уходят второй строкой целиком,
     // заголовок остаётся в одну строку (§6.2: заголовок слева, легенда справа).
-    P + '-root .main-panel .topline{flex-wrap:wrap;row-gap:' + S.s4 + 'px;}',
-    P + '-root .main-panel .t-wrap{flex:1 1 auto;}',
     P + '-root .main-panel .p-title{white-space:nowrap;}',
 
     // Легенда как управление сериями (§6.4)
@@ -851,17 +901,17 @@ function buildCSS() {
     P + '-root .sw .dot{width:11px;height:11px;border-radius:' + R.r1 + 'px;display:inline-block;flex:0 0 auto;}',
 
     // --- Таблица (§4.5) -----------------------------------------------------
-    P + '-root .table-wrap{width:100%;overflow-x:auto;margin-top:' + S.s6 + 'px;}',
+    P + '-root .table-wrap{width:100%;overflow-x:auto;}',
     P + '-root table{width:100%;border-collapse:collapse;table-layout:fixed;}',
-    P + '-root thead th{padding:' + S.s4 + 'px ' + S.s3 + 'px;vertical-align:bottom;',
+    P + '-root thead th{padding:' + S.s4 + 'px;vertical-align:bottom;',
       'font-size:' + F.cap + 'px;color:' + C.muted + ';font-weight:600;text-align:right;',
-      'line-height:1.25;background:' + C.card + ';}',
+      'text-transform:uppercase;letter-spacing:.2px;line-height:1.25;background:' + C.card + ';}',
     P + '-root .g-row th{font-size:' + F.cap + 'px;font-weight:800;letter-spacing:.3px;',
-      'text-transform:uppercase;color:' + C.ink + ';text-align:center;padding-bottom:' + S.s3 + 'px;}',
+      'text-transform:uppercase;color:' + C.ink + ';text-align:center;padding-bottom:0;}',
     P + '-root .g-row th.txt{text-align:left;color:' + C.muted + ';}',
-    P + '-root .g-row th.rs{vertical-align:bottom;border-bottom:1px solid ' + C.line + ';}',
+    P + '-root .g-row th.rs{vertical-align:bottom;border-bottom:1px solid ' + C.line + ';padding-bottom:' + S.s4 + 'px;}',
     P + '-root .g-row th.gcol{border-bottom-style:solid;border-bottom-width:2px;}',
-    P + '-root .s-row th{border-bottom:1px solid ' + C.line + ';padding-top:0;}',
+    P + '-root .s-row th{border-bottom:1px solid ' + C.line + ';}',
     P + '-root .s-row th.sortable{cursor:pointer;user-select:none;',
       'transition:color .12s ease,background .12s ease;}',
     P + '-root .s-row th.sortable:hover{color:' + C.ink + ';background:' + C.hover + ';}',
@@ -869,8 +919,9 @@ function buildCSS() {
     P + '-root .caret{display:inline-block;margin-left:3px;font-size:8px;vertical-align:1px;}',
     P + '-root th.txt,' + P + '-root td.txt{text-align:left;}',
     P + '-root .grp{border-left:1px solid ' + C.line + ';}',
-    P + '-root tbody td{padding:' + S.s4 + 'px ' + S.s3 + 'px;border-bottom:1px solid ' + C.line2 + ';',
-      'text-align:right;font-size:' + F.body + 'px;color:' + C.ink2 + ';',
+    // Строка 36px в обоих листах: 22px строки текста + 7px сверху и снизу
+    P + '-root tbody td{padding:7px ' + S.s4 + 'px;line-height:22px;border-bottom:1px solid ' + C.line2 + ';',
+      'text-align:right;font-size:' + F.body + 'px;font-weight:600;color:' + C.ink2 + ';',
       'font-variant-numeric:tabular-nums;background:' + C.card + ';}',
     P + '-root tbody tr:last-child td{border-bottom:none;}',
     P + '-root tbody tr.urow{cursor:pointer;}',
@@ -884,7 +935,7 @@ function buildCSS() {
     P + '-root .team{font-size:' + F.body + 'px;font-weight:700;color:' + C.ink + ';line-height:1.3;',
       'overflow-wrap:anywhere;}',
     P + '-root .lead{font-weight:700;color:' + C.ink + ';}',
-    P + '-root .zero{color:' + C.muted2 + ';font-weight:400;}',
+    P + '-root .zero{color:' + C.muted2 + ';font-weight:600;}',
     P + '-root .d-cell{font-size:' + F.cap + 'px;font-weight:700;white-space:nowrap;}',
     P + '-root .d-cell.down{color:' + C.redTx + ';}',
     P + '-root .d-cell.up{color:' + C.greenTx + ';}',
@@ -894,10 +945,9 @@ function buildCSS() {
 
     // Спарклайн в строке (§6.2): тренд без клика
     P + '-root .sp-cell{white-space:nowrap;}',
-    P + '-root .spark{display:inline-block;vertical-align:middle;width:64px;height:22px;',
-      'overflow:visible;margin-right:' + S.s3 + 'px;}',
-    P + '-root .sp-val{display:inline-block;vertical-align:middle;min-width:30px;text-align:right;',
-      'font-weight:400;color:' + C.ink2 + ';}',
+    P + '-root .sp-wrap{display:flex;align-items:center;justify-content:flex-end;gap:' + S.s3 + 'px;height:22px;}',
+    P + '-root .spark{display:block;width:64px;height:22px;overflow:visible;flex:0 0 auto;}',
+    P + '-root .sp-val{display:block;min-width:30px;text-align:right;font-weight:600;color:' + C.ink2 + ';}',
     P + '-root td.zero .sp-val{color:' + C.muted2 + ';}',
 
     // Поиск по названию: появляется, когда команд больше одной страницы
@@ -993,7 +1043,7 @@ function buildCSS() {
       P + '-root .kpis{grid-template-columns:repeat(3,minmax(0,1fr));}}',
     '@media (max-width:780px){' + P + '-root .kpis{grid-template-columns:repeat(2,minmax(0,1fr));}',
       P + '-root table{min-width:960px;}' + P + '-root .head{flex-direction:column;}',
-      P + '-root .table-panel .topline{flex-direction:column;}',
+      P + '-root .table-panel .panel-h{flex-direction:column;align-items:stretch;}',
       P + '-root .search input{min-width:0;width:100%;}}',
     '@media (max-width:480px){' + P + '-root .kpis{grid-template-columns:1fr;}',
       P + '-root .panel{padding:' + S.s6 + 'px;}' + P + '-root .kpi{padding:' + S.s6 + 'px;}}',
@@ -1068,21 +1118,21 @@ function kpiCard(k, snap, base) {
 
 function miniHead(id, title, unit, metric, unitFmt, deltaUnit) {
   var v = view();
-  var series = v.series;
+  var series = seriesOf(v);
   var idx = -1, i;
-  if (state.month !== null) {
-    for (i = 0; i < series.length; i++) if (series[i].key === state.month) idx = i;
+  if (state.period !== null) {
+    for (i = 0; i < series.length; i++) if (series[i].key === state.period) idx = i;
   }
   if (idx === -1) idx = series.length - 1;
 
   var cur = idx >= 0 ? series[idx][metric] : null;
   var prev = idx > 0 ? series[idx - 1][metric] : null;
-  var avg = metric === 'act' ? v.avgAct : v.avgTalk;
+  var avg = avgOf(v, metric);
   var when = idx >= 0 ? series[idx].full : DASH;
-  var isSel = state.month !== null;
+  var isSel = state.period !== null;
 
   var h = [];
-  h.push('<div class="topline">');
+  h.push('<div class="panel-h">');
   h.push('<div class="t-wrap"><h2 class="p-title">' + esc(title) + '</h2>' +
     '<div class="p-sub">' + esc(unit) + '</div></div>');
   h.push('<div class="mini-val">');
@@ -1096,22 +1146,22 @@ function miniHead(id, title, unit, metric, unitFmt, deltaUnit) {
       title: title,
       rows: [
         { label: when, value: unitFmt(cur) },
-        { label: 'Предыдущий месяц', value: unitFmt(prev), bench: true }
+        { label: state.grain === 'week' ? 'Предыдущая неделя' : 'Предыдущий месяц', value: unitFmt(prev), bench: true }
       ],
       note: 'Направление не окрашено: больше не значит лучше.'
     }) + '>' + esc(fmtDelta(d, 1, deltaUnit)) + '</span>');
   }
   var baseTxt = '';
   if (state.dept !== null && TOTAL && idx >= 0) {
-    var bp = null;
-    for (i = 0; i < TOTAL.series.length; i++) if (TOTAL.series[i].key === series[idx].key) bp = TOTAL.series[i];
+    var bp = null, ts = seriesOf(TOTAL);
+    for (i = 0; i < ts.length; i++) if (ts[i].key === series[idx].key) bp = ts[i];
     if (bp && bp[metric] !== null) baseTxt = ' · ' + CFG.text.baseAll + ' ' + unitFmt(bp[metric]);
   }
   h.push('<span class="mini-cap">' + esc(when + ' · ' + CFG.text.avgHint + ' ' +
     unitFmt(avg) + baseTxt) + '</span>');
   h.push('</div>');
   h.push('</div>');
-  h.push('<div class="plot" id="' + CFG.ns + '-' + id + '"></div>');
+  h.push('<div class="panel-b"><div class="plot" id="' + CFG.ns + '-' + id + '"></div></div>');
   return h.join('');
 }
 
@@ -1161,6 +1211,13 @@ function tableHead() {
   h.push('</tr>');
   h.push('</thead>');
   return h.join('');
+}
+
+function grainTab(grain, label) {
+  var on = state.grain === grain;
+  return '<button type="button" class="sub-tab' + (on ? ' on' : '') + '"' +
+    (on ? '' : ' data-act="grain" data-arg="' + grain + '"') + ' aria-pressed="' + (on ? 'true' : 'false') + '"' +
+    tipAttr({ title: label, text: CFG.text.grainTip }) + '>' + esc(label) + '</button>';
 }
 
 function subTab(mode, label, tip) {
@@ -1219,9 +1276,9 @@ function sparkSVG(values, color) {
 }
 
 function sparkTip(r, values, group) {
-  var parts = [];
-  for (var i = 0; i < MODEL.weekOrder.length; i++) {
-    var dk = MODEL.weekMeta[MODEL.weekOrder[i]].date;
+  var parts = [], order = sparkWeeks(MODEL.weekOrder);
+  for (var i = 0; i < order.length; i++) {
+    var dk = MODEL.weekMeta[order[i]].date;
     parts.push(pad2(dk.d) + '.' + pad2(dk.m + 1) + ' ' + (values[i] === null ? DASH : fmtPct(values[i])));
   }
   return {
@@ -1237,9 +1294,9 @@ function cellSpark(r, values, share, group) {
   var hasLine = false;
   for (var i = 0; i < values.length; i++) if (values[i] !== null) hasLine = true;
   return '<td class="sp-cell' + (share === 0 ? ' zero' : '') + '"' +
-    (hasLine ? tipAttr(sparkTip(r, values, group)) : '') + '>' +
+    (hasLine ? tipAttr(sparkTip(r, values, group)) : '') + '><div class="sp-wrap">' +
     (hasLine ? sparkSVG(values, group.color) : '') +
-    '<span class="sp-val">' + esc(fmtPct(share)) + '</span></td>';
+    '<span class="sp-val">' + esc(fmtPct(share)) + '</span></div></td>';
 }
 
 function tableTr(r, isTotal) {
@@ -1325,24 +1382,40 @@ function buildHTML() {
 
   var v = view();
   var snap = v.snap;
-  var h = [];
+  var h = [], i;
 
   h.push('<div class="' + CFG.ns + '-root">');
   h.push('<div class="sheet">');
 
-  // --- Шапка листа
+  // --- Полоса срезов сверху: та же, что в hq-portrait; есть только при срезе
+  if (state.dept !== null || state.period !== null) {
+    h.push('<div class="fbar"><span class="fbar-lbl">' + esc(T.sliceLabel) + '</span>');
+    if (state.dept !== null) {
+      h.push('<span class="chip">' + esc(T.filterLabel) + ': <b>' + esc(state.dept) + '</b>' +
+        '<button type="button" class="x" data-act="dept" data-arg="" aria-label="' +
+        esc(T.filterReset) + '"' + tipAttr('Клик — снять срез') + '>×</button></span>');
+    }
+    if (state.period !== null) {
+      var ps = seriesOf(v), pFull = state.period;
+      for (i = 0; i < ps.length; i++) if (ps[i].key === state.period) pFull = ps[i].full;
+      h.push('<span class="chip">' + esc(T.periodLabel) + ': <b>' + esc(pFull) + '</b>' +
+        '<button type="button" class="x" data-act="period" data-arg="' + esc(state.period) +
+        '" aria-label="' + esc(T.filterReset) + '"' + tipAttr('Клик — снять отметку периода') + '>×</button></span>');
+    }
+    h.push('<button type="button" class="freset" data-act="reset">' + esc(T.resetAll) + '</button>');
+    h.push('</div>');
+  }
+
+  // --- Шапка листа: контекст, гранулярность, численность
+  var dyn = fmtInt(MODEL.monthOrder.length) + ' мес.' +
+    (MODEL.weekOrder.length ? ' / ' + fmtInt(MODEL.weekOrder.length) + ' нед.' : '');
   h.push('<div class="head">');
-  h.push('<div class="t-wrap">');
-  h.push('<h1 class="h-title">' + esc(T.title) + '</h1>');
-  h.push('<div class="h-sub">' + esc(T.subtitle + ' · ' + fmtInt(MODEL.depts.length) +
-    ' подразд. · ' + fmtInt(MODEL.monthOrder.length) + ' мес. динамики') +
-    (state.dept !== null ? esc(' · ' + T.scopeNote) : '') + '</div>');
-  h.push('</div>');
-  h.push('<div class="chips">');
-  if (state.dept !== null) {
-    h.push('<span class="chip">' + esc(T.filterLabel) + ': <b>' + esc(state.dept) + '</b>' +
-      '<button type="button" class="x" data-act="dept" data-arg="" aria-label="' +
-      esc(T.filterReset) + '">×</button></span>');
+  h.push('<div class="h-ctx">' + esc(T.subtitle + ' · ' + fmtInt(MODEL.depts.length) +
+    ' подразд. · динамика ' + dyn) + (state.dept !== null ? esc(' · ' + T.scopeNote) : '') + '</div>');
+  h.push('<div class="h-right">');
+  if (MODEL.weekMeasures) {
+    h.push('<div class="sub-tabs" role="group" aria-label="' + esc(T.grainTip) + '">' +
+      grainTab('month', T.grainMonth) + grainTab('week', T.grainWeek) + '</div>');
   }
   h.push('<span class="chip bench"' + tipAttr({
     title: scopeLabel(),
@@ -1354,14 +1427,15 @@ function buildHTML() {
   // --- KPI-полоса
   h.push('<div class="kpis">');
   var base = state.dept !== null ? TOTAL.snap : null;
-  for (var i = 0; i < CFG.kpis.length; i++) h.push(kpiCard(CFG.kpis[i], snap, base));
+  for (i = 0; i < CFG.kpis.length; i++) h.push(kpiCard(CFG.kpis[i], snap, base));
   h.push('</div>');
 
   // --- Рабочая зона
   h.push('<div class="shell">');
   h.push('<div class="panel main-panel">');
-  h.push('<div class="topline">');
-  h.push('<div class="t-wrap"><h2 class="p-title">' + esc(T.stackTitle) + '</h2></div>');
+  h.push('<div class="panel-h">');
+  h.push('<div class="t-wrap"><h2 class="p-title">' + esc(T.stackTitle) + '</h2>' +
+    '<div class="p-sub">' + esc(state.grain === 'week' ? T.stackSubWeek : T.stackSubMonth) + '</div></div>');
   h.push('<div class="t-right">');
   h.push('<div class="sub-tabs" role="group" aria-label="' + esc(T.stackTitle) + '">' +
     subTab('abs', T.modeAbs, 'Столбцы — численность по категориям') +
@@ -1372,14 +1446,14 @@ function buildHTML() {
     var off = !!state.hidden[c.key];
     h.push('<span class="sw' + (off ? ' off' : '') + '" data-act="legend" data-arg="' + esc(c.key) + '"' +
       ' tabindex="0" role="button" aria-pressed="' + (off ? 'false' : 'true') + '"' +
-      tipAttr({ title: c.name, text: c.hint, note: off ? 'Категория скрыта. Нажмите, чтобы вернуть' : 'Нажмите, чтобы скрыть категорию' }) +
+      tipAttr({ title: c.name, text: c.hint, note: off ? 'Категория скрыта. Клик — вернуть' : 'Клик — скрыть категорию' }) +
       '><span class="dot" style="background:' + c.color + '"></span>' + esc(c.name) + '</span>');
   }
   h.push('</div>');
   h.push('</div>');
   h.push('</div>');
-  h.push('<div class="plot" id="' + CFG.ns + '-plot-stack"></div>');
-  h.push('<div class="tbl-note">' + esc(T.stackNote) + '</div>');
+  h.push('<div class="panel-b"><div class="plot" id="' + CFG.ns + '-plot-stack"></div>' +
+    '<div class="tbl-note">' + esc(T.stackNote) + '</div></div>');
   h.push('</div>');
 
   h.push('<div class="side">');
@@ -1394,7 +1468,7 @@ function buildHTML() {
   // --- Таблица
   var body = tableBody();
   h.push('<div class="panel table-panel">');
-  h.push('<div class="topline"><div class="t-wrap"><h2 class="p-title">' + esc(T.tableTitle) + '</h2>' +
+  h.push('<div class="panel-h"><div class="t-wrap"><h2 class="p-title">' + esc(T.tableTitle) + '</h2>' +
     '<div class="p-sub">' + esc(T.tableNote) + '</div></div>');
   if (MODEL.depts.length > CFG.perPage) {
     h.push('<div class="search"><input type="search" data-act="search" value="' + esc(state.query) + '"' +
@@ -1403,9 +1477,9 @@ function buildHTML() {
       ' aria-label="' + esc(T.searchClear) + '">×</button></div>');
   }
   h.push('</div>');
-  h.push('<div class="table-wrap"><table>' + tableHead() +
+  h.push('<div class="panel-b"><div class="table-wrap"><table>' + tableHead() +
     '<tbody id="' + CFG.ns + '-tbody">' + body.html + '</tbody></table></div>');
-  h.push('<div id="' + CFG.ns + '-pager">' + pagerHTML(body) + '</div>');
+  h.push('<div id="' + CFG.ns + '-pager">' + pagerHTML(body) + '</div></div>');
   h.push('</div>');
 
   h.push('</div>');
@@ -1482,20 +1556,20 @@ function drawAxis(svg, pts, x0, step, yBase, selKey) {
     x1: x0, y1: yBase, x2: x0 + step * pts.length, y2: yBase,
     stroke: C.line, 'stroke-width': 1
   }));
-  var every = labelStep(step, 26);
+  var every = labelStep(step, 34);
   for (var i = 0; i < pts.length; i++) {
     var p = pts[i], cx = x0 + step * (i + 0.5);
     var isSel = selKey !== null && p.key === selKey;
-    if (i % every !== 0 && i !== pts.length - 1 && !isSel) continue;
-    svLabel(svg, cx, yBase + 14, p.label, F.cap, isSel ? C.ink : C.muted, isSel ? 800 : 600);
-    if (i === 0 || p.m === 0) svLabel(svg, cx, yBase + 25, String(p.y), F.micro, C.muted2, 600);
+    var show = i % every === 0 || i === pts.length - 1 || isSel;
+    if (show) svLabel(svg, cx, yBase + 14, p.label, F.cap, isSel ? C.ink : C.muted, isSel ? 800 : 600);
+    if (p.sub && (show || every === 1)) svLabel(svg, cx, yBase + 25, p.sub, F.micro, C.muted2, 600);
   }
 }
 
 function renderStack(box, v, animate) {
   var G = CFG.geom, C = CFG.colors, T = CFG.text;
   box.innerHTML = '';
-  var pts = v.series;
+  var pts = seriesOf(v);
   if (!pts.length) return;
 
   var w = Math.max(260, box.clientWidth || 520);
@@ -1523,7 +1597,7 @@ function renderStack(box, v, animate) {
   for (i = 0; i < pts.length; i++) {
     var p = pts[i];
     var cx = x0 + step * (i + 0.5);
-    var isSel = state.month === p.key;
+    var isSel = state.period === p.key;
     var g = sv('g', { class: 'barg' + (isSel ? ' on' : '') });
 
     var stack = 0, visT = visibleTotal(p);
@@ -1566,30 +1640,29 @@ function renderStack(box, v, animate) {
       x: cx - step / 2, y: 0, width: step, height: yBase,
       class: 'hit', tabindex: '0', role: 'button'
     });
-    hit.setAttribute('data-act', 'month');
+    hit.setAttribute('data-act', 'period');
     hit.setAttribute('data-arg', p.key);
     hit.setAttribute('aria-label', p.full);
     hit.setAttribute('data-tip', tipHtml({
       title: p.full,
       rows: tipRows,
       note: [
-        T.stackTotal + ': ' + fmtInt(total),
-        isSel ? 'Нажмите ещё раз, чтобы снять отметку месяца'
-              : 'Нажмите, чтобы отметить месяц на графиках справа'
+        (state.grain === 'week' ? 'Всего в неделе' : T.stackTotal) + ': ' + fmtInt(total),
+        isSel ? 'Клик — снять отметку периода' : 'Клик — отметить период на графиках справа'
       ]
     }));
     g.appendChild(hit);
     svg.appendChild(g);
   }
 
-  drawAxis(svg, pts, x0, step, yBase, state.month);
+  drawAxis(svg, pts, x0, step, yBase, state.period);
   box.appendChild(svg);
 }
 
 function renderLine(box, v, metric, fmtFn, title, animate) {
   var G = CFG.geom, C = CFG.colors;
   box.innerHTML = '';
-  var pts = v.series;
+  var pts = seriesOf(v);
   if (!pts.length) return;
 
   var w = Math.max(220, box.clientWidth || 380);
@@ -1597,7 +1670,7 @@ function renderLine(box, v, metric, fmtFn, title, animate) {
   var x0 = G.PAD_X, plotW = w - G.PAD_X * 2;
   var yTop = G.LBL_ROOM, yBase = h - G.AXIS_H;
 
-  var avg = metric === 'act' ? v.avgAct : v.avgTalk;
+  var avg = avgOf(v, metric);
   var maxV = 0, i;
   for (i = 0; i < pts.length; i++) {
     if (pts[i][metric] !== null) maxV = Math.max(maxV, pts[i][metric]);
@@ -1661,7 +1734,7 @@ function renderLine(box, v, metric, fmtFn, title, animate) {
   for (i = 0; i < pts.length; i++) {
     var p = pts[i];
     if (ys[i] === null) continue;
-    var isSel = state.month === p.key;
+    var isSel = state.period === p.key;
     var g = sv('g', { class: 'ptg' + (isSel ? ' on' : '') });
 
     g.appendChild(sv('circle', {
@@ -1675,28 +1748,27 @@ function renderLine(box, v, metric, fmtFn, title, animate) {
     var prev = i > 0 ? pts[i - 1][metric] : null;
     var rows = [{ label: title, value: fmtFn(p[metric]), color: C.blue }];
     rows.push(prev === null
-      ? { label: CFG.text.monthBase, value: CFG.text.noBase, bench: true }
-      : { label: CFG.text.monthBase, value: fmtDelta(p[metric] - prev, 1), bench: true });
+      ? { label: baseOf(), value: CFG.text.noBase, bench: true }
+      : { label: baseOf(), value: fmtDelta(p[metric] - prev, 1), bench: true });
     if (avg !== null) rows.push({ label: CFG.text.avgHint, value: fmtFn(avg), color: C.bench, dash: true });
 
     var hit = sv('rect', {
       x: xs[i] - step / 2, y: 0, width: step, height: yBase,
       class: 'hit', tabindex: '0', role: 'button'
     });
-    hit.setAttribute('data-act', 'month');
+    hit.setAttribute('data-act', 'period');
     hit.setAttribute('data-arg', p.key);
     hit.setAttribute('aria-label', p.full);
     hit.setAttribute('data-tip', tipHtml({
       title: p.full,
       rows: rows,
-      note: isSel ? 'Нажмите ещё раз, чтобы снять отметку месяца'
-                  : 'Нажмите, чтобы отметить месяц'
+      note: isSel ? 'Клик — снять отметку периода' : 'Клик — отметить период'
     }));
     g.appendChild(hit);
     svg.appendChild(g);
   }
 
-  drawAxis(svg, pts, x0, step, yBase, state.month);
+  drawAxis(svg, pts, x0, step, yBase, state.period);
   box.appendChild(svg);
 }
 
@@ -1774,8 +1846,11 @@ function renderLine(box, v, metric, fmtFn, title, animate) {
         var visible = visibleCats();
         if (!state.hidden[arg] && visible.length <= 1) return;   // последнюю не гасим
         state.hidden[arg] = !state.hidden[arg];
-      } else if (name === 'month') {
-        state.month = state.month === arg ? null : arg;
+      } else if (name === 'period') {
+        state.period = state.period === arg ? null : arg;
+      } else if (name === 'grain') {
+        state.grain = arg === 'week' ? 'week' : 'month';
+        state.period = null;
       } else if (name === 'sort') {
         if (state.sortKey === arg) state.sortDir = -state.sortDir;
         else { state.sortKey = arg; state.sortDir = arg === 'name' ? 1 : -1; }
@@ -1789,7 +1864,7 @@ function renderLine(box, v, metric, fmtFn, title, animate) {
         return;
       } else if (name === 'reset') {
         state.dept = null;
-        state.month = null;
+        state.period = null;
       } else {
         return;
       }
@@ -1831,7 +1906,7 @@ function renderLine(box, v, metric, fmtFn, title, animate) {
       if (e.key === 'Escape' || e.keyCode === 27) {
         var inSearch = e.target && e.target.getAttribute && e.target.getAttribute('data-act') === 'search';
         if (inSearch && state.query) { e.preventDefault(); clearSearch(); return; }
-        if (state.dept !== null || state.month !== null) { e.preventDefault(); act('reset', ''); }
+        if (state.dept !== null || state.period !== null) { e.preventDefault(); act('reset', ''); }
         return;
       }
       if (e.target && e.target.getAttribute && e.target.getAttribute('data-act') === 'search') return;
