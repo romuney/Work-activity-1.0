@@ -10,8 +10,9 @@
 //     отдельными строками row_kind = 'snapshot' — без двойного счёта на стыке
 //     месяцев и без максимума по месяцам. С выдачей 1.0 файл тоже работает:
 //     если строк snapshot нет, недельные поля берутся по-старому;
-//   * таблица: спарклайн доли отклонений по месяцам в каждой строке,
-//     полоса в ячейках долей, поиск по названию, когда команд много;
+//   * таблица: спарклайны долей недоработки и переработки по месяцам —
+//     отдельно, потому что реагируют на них по-разному; полоса в ячейках
+//     долей; поиск по названию, когда команд много;
 //   * KPI-карточки и правые панели при выбранном подразделении показывают
 //     базу «по всем» — видно, лучше команда или хуже остальных;
 //   * стек состава переключается между людьми и долями (100%).
@@ -61,8 +62,10 @@ var CFG = {
     modeAbs: 'Люди',
     modePct: 'Доли',
     baseAll: 'по всем',
-    trendHead: 'Отклонения',
-    trendTip: 'Доля сотрудников в недоработке и переработке от состава месяца. Линия — по месяцам, число — последний месяц.',
+    trendHead: 'Динамика по месяцам',
+    trendTip: 'Доля сотрудников в категории от состава каждого месяца (cat_month). Недоработка и переработка — отдельно: у них разная логика реагирования.',
+    trendLowTip: 'Доля в недоработке от состава месяца, по месяцам. Число — последний месяц. Рост — красный флаг.',
+    trendHighTip: 'Доля в переработке от состава месяца, по месяцам. Число — последний месяц. Важна не сама доля, а её длительность.',
     searchPh: 'Найти команду',
     searchClear: 'Очистить поиск',
     stackNote: 'Клик по столбцу отмечает месяц на графиках справа, клик по легенде убирает категорию',
@@ -506,21 +509,29 @@ function aggregate(name) {
   return out;
 }
 
-// Доля отклонений (недоработка + переработка) от состава месяца, %.
-function deviationShare(point) {
+// Доля категории от состава месяца, %. Недоработку и переработку не
+// складываем: это разные сигналы с разной логикой реагирования.
+function catShare(point, catKey) {
   if (!(point.total > 0)) return null;
-  return (point.cats.under + point.cats.over) / point.total * 100;
+  return point.cats[catKey] / point.total * 100;
 }
 
-// Строка таблицы: доли, дельты и спарклайн считаются здесь, SQL их не отдаёт.
+function sparkSeries(series, catKey) {
+  var values = [], last = null, i;
+  for (i = 0; i < series.length; i++) values.push(catShare(series[i], catKey));
+  for (i = values.length - 1; i >= 0; i--) if (values[i] !== null) { last = values[i]; break; }
+  return { values: values, last: last };
+}
+
+// Строка таблицы: доли, дельты и спарклайны считаются здесь, SQL их не отдаёт.
 function tableRow(name, snap, series) {
   var size = snap.cnt_emp;
-  var spark = [], last = null, i;
-  for (i = 0; i < series.length; i++) spark.push(deviationShare(series[i]));
-  for (i = spark.length - 1; i >= 0; i--) if (spark[i] !== null) { last = spark[i]; break; }
+  var spLow = sparkSeries(series, 'under'), spHigh = sparkSeries(series, 'over');
   return {
-    spark: spark,
-    trend: last,
+    spark_low: spLow.values,
+    trend_low: spLow.last,
+    spark_high: spHigh.values,
+    trend_high: spHigh.last,
     name: name,
     isTotal: name === null,
     cnt_emp: size,
@@ -607,7 +618,8 @@ var SORT_COLS = {
   talk_20_30: function(r) { return r.talk_20_30; },
   talk_30_50: function(r) { return r.talk_30_50; },
   talk_50_plus: function(r) { return r.talk_50_plus; },
-  trend: function(r) { return r.trend === null ? -1 : r.trend; }
+  trend_low: function(r) { return r.trend_low === null ? -1 : r.trend_low; },
+  trend_high: function(r) { return r.trend_high === null ? -1 : r.trend_high; }
 };
 
 // Максимум по колонке среди подразделений — шкала полосы в ячейке (§4.6).
@@ -842,9 +854,9 @@ function buildCSS() {
 
     // Спарклайн в строке (§6.2): тренд без клика
     P + '-root .sp-cell{white-space:nowrap;}',
-    P + '-root .spark{display:inline-block;vertical-align:middle;width:64px;height:22px;',
+    P + '-root .spark{display:inline-block;vertical-align:middle;width:56px;height:22px;',
       'overflow:visible;margin-right:' + S.s3 + 'px;}',
-    P + '-root .sp-val{display:inline-block;vertical-align:middle;min-width:34px;text-align:right;',
+    P + '-root .sp-val{display:inline-block;vertical-align:middle;min-width:30px;text-align:right;',
       'font-weight:700;color:' + C.ink + ';}',
 
     // Поиск по названию: появляется, когда команд больше одной страницы
@@ -939,7 +951,7 @@ function buildCSS() {
       P + '-root .side{grid-template-rows:auto auto;}',
       P + '-root .kpis{grid-template-columns:repeat(3,minmax(0,1fr));}}',
     '@media (max-width:780px){' + P + '-root .kpis{grid-template-columns:repeat(2,minmax(0,1fr));}',
-      P + '-root table{min-width:960px;}' + P + '-root .head{flex-direction:column;}',
+      P + '-root table{min-width:1080px;}' + P + '-root .head{flex-direction:column;}',
       P + '-root .table-panel .topline{flex-direction:column;}',
       P + '-root .search input{min-width:0;width:100%;}}',
     '@media (max-width:480px){' + P + '-root .kpis{grid-template-columns:1fr;}',
@@ -1082,10 +1094,10 @@ function tableHead() {
     ] }
   ];
 
-  h.push('<colgroup><col style="width:21%" /><col style="width:8%" />');
-  for (i = 0; i < 6; i++) h.push('<col style="width:7.5%" />');
-  for (i = 0; i < 3; i++) h.push('<col style="width:5%" />');
-  h.push('<col style="width:11%" />');
+  h.push('<colgroup><col style="width:18%" /><col style="width:8%" />');
+  for (i = 0; i < 6; i++) h.push('<col style="width:7%" />');
+  for (i = 0; i < 3; i++) h.push('<col style="width:4.5%" />');
+  for (i = 0; i < 2; i++) h.push('<col style="width:9.25%" />');
   h.push('</colgroup>');
 
   h.push('<thead>');
@@ -1097,7 +1109,8 @@ function tableHead() {
     h.push('<th class="grp gcol" colspan="3" style="border-bottom-color:' + g.color + '"' +
       tipAttr({ title: g.name, text: g.hint }) + '>' + esc(g.name) + '</th>');
   }
-  h.push(th('rs grp', 'trend', CFG.text.trendHead, CFG.text.trendTip, 2));
+  h.push('<th class="grp gcol" colspan="2" style="border-bottom-color:' + CFG.colors.bench + '"' +
+    tipAttr({ title: CFG.text.trendHead, text: CFG.text.trendTip }) + '>' + esc(CFG.text.trendHead) + '</th>');
   h.push('</tr>');
 
   h.push('<tr class="s-row">');
@@ -1107,6 +1120,8 @@ function tableHead() {
       h.push(th(j === 0 ? 'grp' : '', c.key, c.label, c.tip, 0));
     }
   }
+  h.push(th('grp', 'trend_low', CFG.tableGroups[0].name, CFG.text.trendLowTip, 0));
+  h.push(th('', 'trend_high', CFG.tableGroups[1].name, CFG.text.trendHighTip, 0));
   h.push('</tr>');
   h.push('</thead>');
   return h.join('');
@@ -1145,8 +1160,8 @@ function tableBody() {
   return { html: h.join(''), from: from, to: to, total: rows.length, pages: totalPages };
 }
 
-function sparkSVG(values) {
-  var C = CFG.colors, w = 64, h = 22, pad = 3, n = values.length, i;
+function sparkSVG(values, color) {
+  var w = 56, h = 22, pad = 3, n = values.length, i;
   if (!n) return '';
   var max = 0;
   for (i = 0; i < n; i++) if (values[i] !== null) max = Math.max(max, values[i]);
@@ -1161,23 +1176,30 @@ function sparkSVG(values) {
   }
   if (!d) return '';
   return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true">' +
-    '<path d="' + d + '" fill="none" stroke="' + C.blue + '" stroke-width="1.6"' +
+    '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8"' +
     ' stroke-linejoin="round" stroke-linecap="round"/>' +
-    '<circle cx="' + lx + '" cy="' + ly + '" r="2.4" fill="#fff" stroke="' + C.blue + '" stroke-width="1.6"/>' +
+    '<circle cx="' + lx + '" cy="' + ly + '" r="2.4" fill="#fff" stroke="' + color + '" stroke-width="1.8"/>' +
     '</svg>';
 }
 
-function sparkTip(r) {
+function sparkTip(r, values, group) {
   var parts = [];
   for (var i = 0; i < MODEL.monthOrder.length; i++) {
     var meta = MODEL.monthMeta[MODEL.monthOrder[i]];
-    parts.push(MONTHS_SHORT[meta.m] + ' ' + (r.spark[i] === null ? DASH : fmtPct(r.spark[i])));
+    parts.push(MONTHS_SHORT[meta.m] + ' ' + (values[i] === null ? DASH : fmtPct(values[i])));
   }
   return {
-    title: (r.isTotal ? CFG.text.allDepts : r.name) + ' · ' + CFG.text.trendHead.toLowerCase(),
+    title: (r.isTotal ? CFG.text.allDepts : r.name) + ' · ' + group.name.toLowerCase() + ' по месяцам',
     text: parts.join(' · '),
-    note: 'Недоработка и переработка от состава месяца'
+    note: 'Доля от состава месяца (cat_month), не от недели'
   };
+}
+
+function cellSpark(r, values, last, group, cls) {
+  return '<td class="' + cls + ' sp-cell"' + tipAttr(sparkTip(r, values, group)) + '>' +
+    sparkSVG(values, group.color) +
+    '<span class="sp-val' + (last === null ? ' zero' : '') + '">' +
+    esc(last === null ? DASH : fmtPct(last)) + '</span></td>';
 }
 
 function tableTr(r, isTotal) {
@@ -1200,9 +1222,8 @@ function tableTr(r, isTotal) {
   h.push(cellNum(r.talk_20_30, 'grp'));
   h.push(cellNum(r.talk_30_50, ''));
   h.push(cellNum(r.talk_50_plus, ''));
-  h.push('<td class="grp sp-cell"' + tipAttr(sparkTip(r)) + '>' + sparkSVG(r.spark) +
-    '<span class="sp-val' + (r.trend === null ? ' zero' : '') + '">' +
-    esc(r.trend === null ? DASH : fmtPct(r.trend)) + '</span></td>');
+  h.push(cellSpark(r, r.spark_low, r.trend_low, CFG.tableGroups[0], 'grp'));
+  h.push(cellSpark(r, r.spark_high, r.trend_high, CFG.tableGroups[1], ''));
   h.push('</tr>');
   return h.join('');
 }
